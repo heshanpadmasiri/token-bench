@@ -22,7 +22,7 @@ const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--ta
 
 Implementations:
   task:      content-based-router
-  language:  ballerina
+  language:  ballerina, go
   harness:   pi
 `
 
@@ -172,7 +172,7 @@ func executeRun(run int, directory string, definition task.Task, implementation 
 		stopProject, startErr := implementation.StartProject(directory)
 		feedback := ""
 		if startErr != nil {
-			feedback = fmt.Sprintf("The Ballerina application failed to start. Exact diagnosis:\n%s", startErr)
+			feedback = fmt.Sprintf("The application failed to start. Exact diagnosis:\n%s", startErr)
 		} else {
 			feedback, err = handle.Feedback()
 			if err == nil && feedback == "" {
@@ -213,10 +213,14 @@ func selectTask(name string) (task.Task, error) {
 }
 
 func selectLanguage(name string) (language.Language, error) {
-	if name != "ballerina" {
+	switch name {
+	case "ballerina":
+		return language.NewBallerina(), nil
+	case "go":
+		return language.NewGo(), nil
+	default:
 		return nil, fmt.Errorf("unknown language %q", name)
 	}
-	return language.NewBallerina(), nil
 }
 
 func selectHarness(name string) (func() harness.Harness, error) {

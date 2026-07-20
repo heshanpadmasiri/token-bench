@@ -2,7 +2,10 @@
 // token cost of repeated validations
 package language
 
-import "token-bench/language/internal/ballerina"
+import (
+	"token-bench/language/internal/ballerina"
+	"token-bench/language/internal/golang"
+)
 
 type (
 	Language interface {
@@ -14,4 +17,9 @@ type (
 // NewBallerina initializes the Ballerina language implementation.
 func NewBallerina() Language {
 	return ballerina.New()
+}
+
+// NewGo initializes the Go language implementation.
+func NewGo() Language {
+	return golang.New()
 }
