@@ -37,6 +37,28 @@ func TestGenerateDiscoversNestedResultsAndExcludesFailures(t *testing.T) {
 	}
 }
 
+func TestGenerateComparesSkillsConfigurations(t *testing.T) {
+	root := t.TempDir()
+	skills := filepath.Join(root, "skills")
+	for index, skillsDir := range []string{"", skills} {
+		writeTestResult(t, filepath.Join(root, "variant", string(rune('a'+index)), "result.json"), result.Result{
+			SchemaVersion: result.SchemaVersion, Task: "router", Language: "go", Harness: "pi", SkillsDir: skillsDir,
+			Run: 1, RequestedRuns: 1, Passed: true, Tokens: result.TokenCount{Total: 100 + index},
+		})
+	}
+
+	var output bytes.Buffer
+	if err := Generate([]string{root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	html := output.String()
+	for _, expected := range []string{"No skills", skills, "2 language/skills variants"} {
+		if !strings.Contains(html, expected) {
+			t.Errorf("report does not contain %q", expected)
+		}
+	}
+}
+
 func TestDistribution(t *testing.T) {
 	minimum, q1, median, q3, maximum, mean, deviation := distribution([]float64{10, 20, 30})
 	if minimum != 10 || q1 != 15 || median != 20 || q3 != 25 || maximum != 30 || mean != 20 {

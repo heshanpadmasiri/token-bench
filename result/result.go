@@ -6,9 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // TokenCount contains the token usage dimensions recorded for a run.
 type TokenCount struct {
@@ -25,6 +26,7 @@ type Result struct {
 	Task          string     `json:"task"`
 	Language      string     `json:"language"`
 	Harness       string     `json:"harness"`
+	SkillsDir     string     `json:"skillsDir,omitempty"`
 	Run           int        `json:"run"`
 	RequestedRuns int        `json:"requestedRuns"`
 	Passed        bool       `json:"passed"`
@@ -68,6 +70,9 @@ func (r Result) Validate() error {
 	}
 	if r.Task == "" || r.Language == "" || r.Harness == "" {
 		return errors.New("task, language, and harness are required")
+	}
+	if r.SkillsDir != "" && !filepath.IsAbs(r.SkillsDir) {
+		return errors.New("skillsDir must be an absolute path")
 	}
 	if r.Run < 1 || r.RequestedRuns < 1 || r.Run > r.RequestedRuns {
 		return errors.New("run must be within requestedRuns")

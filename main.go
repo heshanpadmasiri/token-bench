@@ -17,8 +17,8 @@ import (
 	"token-bench/task"
 )
 
-// TODO: add optional harness flags (system prompt, skills, model, thinking)
-const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--target=DIR]
+// TODO: add optional harness flags (system prompt, model, thinking)
+const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--target=DIR] [--skills=DIR]
 
 Implementations:
   task:      content-based-router
@@ -27,11 +27,12 @@ Implementations:
 `
 
 type options struct {
-	task     string
-	language string
-	harness  string
-	runs     int
-	target   string
+	task      string
+	language  string
+	harness   string
+	runs      int
+	target    string
+	skillsDir string
 }
 
 type runResult = benchresult.Result
@@ -45,12 +46,13 @@ type tokenSummary struct {
 }
 
 type report struct {
-	Task     string       `json:"task"`
-	Language string       `json:"language"`
-	Harness  string       `json:"harness"`
-	Runs     []runResult  `json:"runs"`
-	Mean     tokenSummary `json:"mean"`
-	Median   tokenSummary `json:"median"`
+	Task      string       `json:"task"`
+	Language  string       `json:"language"`
+	Harness   string       `json:"harness"`
+	SkillsDir string       `json:"skillsDir,omitempty"`
+	Runs      []runResult  `json:"runs"`
+	Mean      tokenSummary `json:"mean"`
+	Median    tokenSummary `json:"median"`
 }
 
 func main() {
@@ -70,7 +72,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	harnessConstructor, err := selectHarness(configuration.harness)
+	configuration.skillsDir, err = normalizeSkillsDir(configuration.skillsDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	harnessConstructor, err := selectHarness(configuration.harness, harness.Config{SkillsDir: configuration.skillsDir})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -81,7 +88,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	result := report{Task: taskDefinition.Name, Language: configuration.language, Harness: configuration.harness}
+	result := report{Task: taskDefinition.Name, Language: configuration.language, Harness: configuration.harness, SkillsDir: configuration.skillsDir}
 	for run := 1; run <= configuration.runs; run++ {
 		directory := filepath.Join(target, fmt.Sprintf("run-%03d", run))
 		if err := os.Mkdir(directory, 0o755); err != nil {
@@ -93,6 +100,7 @@ func main() {
 			Task:          taskDefinition.Name,
 			Language:      configuration.language,
 			Harness:       configuration.harness,
+			SkillsDir:     configuration.skillsDir,
 			Run:           run,
 			RequestedRuns: configuration.runs,
 		}
@@ -228,11 +236,11 @@ func selectLanguage(name string) (language.Language, error) {
 	}
 }
 
-func selectHarness(name string) (func() harness.Harness, error) {
+func selectHarness(name string, config harness.Config) (func() harness.Harness, error) {
 	if name != "pi" {
 		return nil, fmt.Errorf("unknown harness %q", name)
 	}
-	return harness.NewPi, nil
+	return func() harness.Harness { return harness.NewPi(config) }, nil
 }
 
 func parseOptions(arguments []string) (options, error) {
@@ -260,6 +268,23 @@ func parseOptions(arguments []string) (options, error) {
 				return options{}, errors.New("--n-runs must be a positive integer")
 			}
 			parsed.runs = value
+		case strings.HasPrefix(argument, "--skills="):
+			if parsed.skillsDir != "" {
+				return options{}, errors.New("--skills may only be specified once")
+			}
+			parsed.skillsDir = strings.TrimPrefix(argument, "--skills=")
+			if parsed.skillsDir == "" {
+				return options{}, errors.New("--skills requires a value")
+			}
+		case argument == "--skills":
+			if parsed.skillsDir != "" {
+				return options{}, errors.New("--skills may only be specified once")
+			}
+			index++
+			if index == len(arguments) || arguments[index] == "" {
+				return options{}, errors.New("--skills requires a value")
+			}
+			parsed.skillsDir = arguments[index]
 		case strings.HasPrefix(argument, "--target="):
 			parsed.target = strings.TrimPrefix(argument, "--target=")
 		case argument == "--target":
@@ -300,6 +325,24 @@ func allocatePorts(count int) ([]int, error) {
 		ports = append(ports, port)
 	}
 	return ports, nil
+}
+
+func normalizeSkillsDir(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("normalize skills directory: %w", err)
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return "", fmt.Errorf("inspect skills directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("skills path %q is not a directory", path)
+	}
+	return filepath.Clean(absolute), nil
 }
 
 func prepareTarget(target string) (string, error) {
@@ -364,6 +407,13 @@ func median(values []float64) float64 {
 
 func printReport(result report, target string) error {
 	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	skills := result.SkillsDir
+	if skills == "" {
+		skills = "No skills"
+	}
+	if _, err := fmt.Fprintf(writer, "SKILLS\t%s\n", skills); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintln(writer, "RUN\tPASS\tFIXES\tINPUT\tOUTPUT\tCACHE READ\tCACHE WRITE\tTOTAL\tERROR"); err != nil {
 		return err
 	}

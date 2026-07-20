@@ -4,6 +4,11 @@ package harness
 import "token-bench/harness/internal/pi"
 
 type (
+	// Config contains options shared by coding harness implementations.
+	Config struct {
+		SkillsDir string
+	}
+
 	Harness interface {
 		Start(workingDir string) error
 		// Send a message to the given harness. Message could be either the starting prompt or feedback
@@ -15,6 +20,6 @@ type (
 )
 
 // NewPi initializes the Pi coding harness.
-func NewPi() Harness {
-	return pi.New()
+func NewPi(config Config) Harness {
+	return pi.New(pi.Config{SkillsDir: config.SkillsDir})
 }

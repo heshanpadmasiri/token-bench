@@ -1,19 +1,44 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	benchresult "token-bench/result"
 )
 
 func TestParseOptions(t *testing.T) {
-	parsed, err := parseOptions([]string{"content-based-router", "ballerina", "pi", "--n-runs=3", "--target=/tmp/token-bench"})
+	parsed, err := parseOptions([]string{"content-based-router", "ballerina", "pi", "--n-runs=3", "--target=/tmp/token-bench", "--skills=/tmp/skills"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.runs != 3 || parsed.target != "/tmp/token-bench" {
+	if parsed.runs != 3 || parsed.target != "/tmp/token-bench" || parsed.skillsDir != "/tmp/skills" {
 		t.Fatalf("unexpected options: %+v", parsed)
 	}
+}
+
+func TestNormalizeSkillsDir(t *testing.T) {
+	directory := t.TempDir()
+	normalized, err := normalizeSkillsDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized != filepath.Clean(directory) || !filepath.IsAbs(normalized) {
+		t.Fatalf("unexpected normalized directory: %q", normalized)
+	}
+
+	file := filepath.Join(directory, "SKILL.md")
+	if err := writeTestFile(file); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := normalizeSkillsDir(file); err == nil {
+		t.Fatal("expected non-directory skills path to fail")
+	}
+}
+
+func writeTestFile(path string) error {
+	return os.WriteFile(path, []byte("skill"), 0o644)
 }
 
 func TestSelectLanguage(t *testing.T) {

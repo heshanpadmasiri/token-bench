@@ -18,7 +18,8 @@
     figcaption { font-size: 1.1rem; font-weight: 700; }
     .legend { margin-top: .35rem; color: #667085; font-size: .9rem; }
     svg { display: block; width: 100%; margin-top: .5rem; overflow: visible; }
-    .language { font-size: 22px; font-weight: 650; fill: #344054; }
+    .language { font-size: 20px; font-weight: 650; fill: #344054; }
+    .skills { font-size: 15px; fill: #667085; }
     .whisker { stroke: #667085; stroke-width: 3; }
     .quartile { fill: #dce4ff; stroke: #5577e5; stroke-width: 3; }
     .median { stroke: #172033; stroke-width: 4; }
@@ -28,7 +29,7 @@
     .unavailable { font-size: 18px; fill: #667085; }
     table { width: 100%; margin-top: 1.5rem; border-collapse: collapse; }
     th, td { padding: .65rem; border-bottom: 1px solid #e5e9f0; text-align: right; }
-    th:first-child, td:first-child { text-align: left; }
+    th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
     th { color: #475467; font-size: .85rem; }
   </style>
 </head>
@@ -36,12 +37,13 @@
 <main>
   <h1>Token Bench Report</h1>
   <div class="muted">Harness: <strong>{{.Harness}}</strong> · {{.TotalRuns}} runs</div>
+  <div class="muted">Skills: {{range $index, $skills := .SkillsDirs}}{{if $index}} · {{end}}<strong>{{$skills}}</strong>{{end}}</div>
   {{if .FailedRuns}}<div class="warning">Warning: {{.FailedRuns}} of {{.TotalRuns}} runs failed. Failed runs are excluded from all averages.</div>{{end}}
 
   {{range .Tasks}}
   <section class="task">
     <h2>{{.Name}}</h2>
-    <div class="muted">{{.TotalRuns}} runs across {{len .Languages}} languages; averages use successful runs only.</div>
+    <div class="muted">{{.TotalRuns}} runs across {{len .Languages}} language/skills variants; averages use successful runs only.</div>
     {{if .NoSuccesses}}<div class="warning">Warning: this task has no successful runs, so averages are unavailable.</div>{{else if .FailedRuns}}<div class="warning">Warning: {{.FailedRuns}} runs failed for this task and are excluded from averages.</div>{{end}}
 
     <div class="charts">
@@ -49,10 +51,11 @@
       <figure>
         <figcaption>{{.Name}}</figcaption>
         <div class="legend">Whiskers: range · box: Q1–Q3 · dark line: median · dot: mean · orange line: mean ± 1σ</div>
-        <svg viewBox="0 0 1200 {{.Height}}" role="img" aria-label="{{.Name}} distribution by language">
+        <svg viewBox="0 0 1500 {{.Height}}" role="img" aria-label="{{.Name}} distribution by language and skills">
           {{range .Boxes}}
           <g transform="translate(0,{{.Y}})">
-            <text class="language" x="0" y="0" dominant-baseline="middle">{{.Language}}</text>
+            <text class="language" x="0" y="-9" dominant-baseline="middle">{{.Language}}</text>
+            <text class="skills" x="0" y="15" dominant-baseline="middle">{{.SkillsDir}}</text>
             {{if .Available}}
             <line class="whisker" x1="{{printf "%.2f" .MinimumX}}" x2="{{printf "%.2f" .MaximumX}}" y1="0" y2="0"></line>
             <line class="whisker" x1="{{printf "%.2f" .MinimumX}}" x2="{{printf "%.2f" .MinimumX}}" y1="-11" y2="11"></line>
@@ -61,9 +64,9 @@
             <line class="median" x1="{{printf "%.2f" .MedianX}}" x2="{{printf "%.2f" .MedianX}}" y1="-18" y2="18"></line>
             <line class="deviation" x1="{{printf "%.2f" .DeviationStartX}}" x2="{{printf "%.2f" .DeviationEndX}}" y1="24" y2="24"></line>
             <circle class="mean" cx="{{printf "%.2f" .MeanX}}" cy="0" r="7"></circle>
-            <text class="value" x="885" y="0" dominant-baseline="middle">median {{printf "%.1f" .Median}} · σ {{printf "%.1f" .Deviation}}</text>
+            <text class="value" x="1175" y="0" dominant-baseline="middle">median {{printf "%.1f" .Median}} · σ {{printf "%.1f" .Deviation}}</text>
             {{else}}
-            <text class="unavailable" x="210" y="0" dominant-baseline="middle">No successful runs</text>
+            <text class="unavailable" x="500" y="0" dominant-baseline="middle">No successful runs</text>
             {{end}}
           </g>
           {{end}}
@@ -73,10 +76,10 @@
     </div>
 
     <table>
-      <thead><tr><th>Language</th><th>Successful</th><th>Failed</th><th>Pass rate</th><th>Avg fixes</th><th>Avg input</th><th>Avg output</th><th>Avg total</th></tr></thead>
+      <thead><tr><th>Language</th><th>Skills</th><th>Successful</th><th>Failed</th><th>Pass rate</th><th>Avg fixes</th><th>Avg input</th><th>Avg output</th><th>Avg total</th></tr></thead>
       <tbody>
         {{range .Languages}}<tr>
-          <td>{{.Name}}</td><td>{{.Successful}}</td><td>{{.Failed}}</td><td>{{printf "%.1f" .PassRate}}%</td>
+          <td>{{.Name}}</td><td>{{.SkillsDir}}</td><td>{{.Successful}}</td><td>{{.Failed}}</td><td>{{printf "%.1f" .PassRate}}%</td>
           <td>{{printf "%.1f" .AvgCorrections}}</td><td>{{printf "%.1f" .AvgInput}}</td><td>{{printf "%.1f" .AvgOutput}}</td><td>{{printf "%.1f" .AvgTotal}}</td>
         </tr>{{end}}
       </tbody>

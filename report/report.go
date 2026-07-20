@@ -26,6 +26,7 @@ type discoveredResult struct {
 
 type reportData struct {
 	Harness    string
+	SkillsDirs []string
 	TotalRuns  int
 	FailedRuns int
 	Tasks      []taskData
@@ -42,6 +43,7 @@ type taskData struct {
 
 type languageData struct {
 	Name           string
+	SkillsDir      string
 	Runs           int
 	Successful     int
 	Failed         int
@@ -63,6 +65,7 @@ type chartData struct {
 
 type boxData struct {
 	Language        string
+	SkillsDir       string
 	Available       bool
 	Y               int
 	MinimumX        float64
@@ -156,20 +159,28 @@ func discover(paths []string) ([]discoveredResult, error) {
 	return values, nil
 }
 
+type variantKey struct {
+	language  string
+	skillsDir string
+}
+
 func aggregate(discovered []discoveredResult) (reportData, error) {
 	harnesses := make(map[string]struct{})
-	byTask := make(map[string]map[string][]result.Result)
+	skillsDirs := make(map[string]struct{})
+	byTask := make(map[string]map[variantKey][]result.Result)
 	data := reportData{TotalRuns: len(discovered)}
 	for _, item := range discovered {
 		current := item.value
 		harnesses[current.Harness] = struct{}{}
+		skillsDirs[current.SkillsDir] = struct{}{}
 		if !current.Passed {
 			data.FailedRuns++
 		}
 		if byTask[current.Task] == nil {
-			byTask[current.Task] = make(map[string][]result.Result)
+			byTask[current.Task] = make(map[variantKey][]result.Result)
 		}
-		byTask[current.Task][current.Language] = append(byTask[current.Task][current.Language], current)
+		key := variantKey{language: current.Language, skillsDir: current.SkillsDir}
+		byTask[current.Task][key] = append(byTask[current.Task][key], current)
 	}
 	if len(harnesses) != 1 {
 		names := make([]string, 0, len(harnesses))
@@ -182,12 +193,15 @@ func aggregate(discovered []discoveredResult) (reportData, error) {
 	for harness := range harnesses {
 		data.Harness = harness
 	}
+	for _, skillsDir := range sortedKeys(skillsDirs) {
+		data.SkillsDirs = append(data.SkillsDirs, skillsLabel(skillsDir))
+	}
 	taskNames := sortedKeys(byTask)
 	for _, taskName := range taskNames {
 		task := taskData{Name: taskName}
-		for _, languageName := range sortedKeys(byTask[taskName]) {
-			runs := byTask[taskName][languageName]
-			language := summarizeLanguage(languageName, runs)
+		for _, key := range sortedVariantKeys(byTask[taskName]) {
+			runs := byTask[taskName][key]
+			language := summarizeLanguage(key, runs)
 			task.Languages = append(task.Languages, language)
 			task.TotalRuns += language.Runs
 			task.FailedRuns += language.Failed
@@ -203,8 +217,8 @@ func aggregate(discovered []discoveredResult) (reportData, error) {
 	return data, nil
 }
 
-func summarizeLanguage(name string, runs []result.Result) languageData {
-	value := languageData{Name: name, Runs: len(runs)}
+func summarizeLanguage(key variantKey, runs []result.Result) languageData {
+	value := languageData{Name: key.language, SkillsDir: skillsLabel(key.skillsDir), Runs: len(runs)}
 	for _, run := range runs {
 		if !run.Passed {
 			value.Failed++
@@ -233,7 +247,7 @@ func summarizeLanguage(name string, runs []result.Result) languageData {
 }
 
 func makeChart(name string, languages []languageData, metric func(languageData) []float64) chartData {
-	const plotStart = 210.0
+	const plotStart = 500.0
 	const plotWidth = 650.0
 	chart := chartData{Name: name, Height: 45 + len(languages)*72}
 	var maximum float64
@@ -255,6 +269,7 @@ func makeChart(name string, languages []languageData, metric func(languageData) 
 		deviationEndX := scale(min(maximum, mean+deviation))
 		chart.Boxes = append(chart.Boxes, boxData{
 			Language:        language.Name,
+			SkillsDir:       language.SkillsDir,
 			Available:       len(values) > 0,
 			Y:               30 + index*72,
 			MinimumX:        scale(minimum),
@@ -299,6 +314,27 @@ func quantile(ordered []float64, percentile float64) float64 {
 	}
 	weight := position - float64(lower)
 	return ordered[lower]*(1-weight) + ordered[upper]*weight
+}
+
+func skillsLabel(path string) string {
+	if path == "" {
+		return "No skills"
+	}
+	return path
+}
+
+func sortedVariantKeys(values map[variantKey][]result.Result) []variantKey {
+	keys := make([]variantKey, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].language == keys[j].language {
+			return keys[i].skillsDir < keys[j].skillsDir
+		}
+		return keys[i].language < keys[j].language
+	})
+	return keys
 }
 
 func sortedKeys[V any](values map[string]V) []string {

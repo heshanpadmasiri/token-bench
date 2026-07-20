@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +22,11 @@ const (
 	thinking = "high"
 )
 
+// Config contains Pi startup configuration.
+type Config struct {
+	SkillsDir string
+}
+
 // TokenCount contains usage dimensions reported by Pi.
 type TokenCount struct {
 	Input      int `json:"input"`
@@ -33,6 +37,7 @@ type TokenCount struct {
 }
 
 type pi struct {
+	config    Config
 	paneID    string
 	stream    string
 	events    chan map[string]json.RawMessage
@@ -46,8 +51,8 @@ type pi struct {
 }
 
 // New initializes the private Pi implementation.
-func New() *pi {
-	return &pi{}
+func New(config Config) *pi {
+	return &pi{config: config}
 }
 
 func (p *pi) Start(workingDir string) error {
@@ -97,15 +102,7 @@ func (p *pi) Start(workingDir string) error {
 	p.readErr = make(chan error, 1)
 	go p.readEvents(readerCtx)
 
-	startCommand := strings.Join([]string{
-		"stty", "-icanon", "-echo", ";",
-		"pi", "--mode", "rpc", "--no-session",
-		"--provider", provider,
-		"--model", model,
-		"--thinking", thinking,
-		"|", "tee", "-a", strconv.Quote(p.stream),
-		";", "stty", "sane",
-	}, " ")
+	startCommand := p.startCommand()
 	if err := sendShellCommand(ctx, p.paneID, startCommand); err != nil {
 		_ = p.endLocked()
 		return fmt.Errorf("start Pi: %w", err)
@@ -121,6 +118,28 @@ func (p *pi) Start(workingDir string) error {
 		return fmt.Errorf("wait for Pi RPC startup: %w", err)
 	}
 	return nil
+}
+
+func (p *pi) startCommand() string {
+	arguments := []string{
+		"stty", "-icanon", "-echo", ";",
+		"pi", "--mode", "rpc", "--no-session", "--no-skills",
+		"--provider", shellQuote(provider),
+		"--model", shellQuote(model),
+		"--thinking", shellQuote(thinking),
+	}
+	if p.config.SkillsDir != "" {
+		arguments = append(arguments, "--skill", shellQuote(p.config.SkillsDir))
+	}
+	arguments = append(arguments,
+		"|", "tee", "-a", shellQuote(p.stream),
+		";", "stty", "sane",
+	)
+	return strings.Join(arguments, " ")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func (p *pi) SendMessage(message string) (string, error) {

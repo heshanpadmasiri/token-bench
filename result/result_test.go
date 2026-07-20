@@ -13,6 +13,7 @@ func TestWriteRead(t *testing.T) {
 		Task:          "router",
 		Language:      "go",
 		Harness:       "pi",
+		SkillsDir:     "/tmp/benchmark-skills",
 		Run:           1,
 		RequestedRuns: 2,
 		Passed:        true,
@@ -31,8 +32,15 @@ func TestWriteRead(t *testing.T) {
 }
 
 func TestValidateRejectsUnknownSchema(t *testing.T) {
-	value := Result{SchemaVersion: 2, Task: "router", Language: "go", Harness: "pi", Run: 1, RequestedRuns: 1}
+	value := Result{SchemaVersion: 1, Task: "router", Language: "go", Harness: "pi", Run: 1, RequestedRuns: 1}
 	if err := value.Validate(); err == nil {
 		t.Fatal("expected schema validation error")
+	}
+}
+
+func TestValidateRejectsRelativeSkillsDirectory(t *testing.T) {
+	value := Result{SchemaVersion: SchemaVersion, Task: "router", Language: "go", Harness: "pi", SkillsDir: "skills", Run: 1, RequestedRuns: 1}
+	if err := value.Validate(); err == nil {
+		t.Fatal("expected skills directory validation error")
 	}
 }
