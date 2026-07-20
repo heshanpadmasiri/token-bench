@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"token-bench/harness"
 	benchresult "token-bench/result"
 )
 
@@ -49,6 +50,17 @@ func TestSelectLanguage(t *testing.T) {
 	}
 	if _, err := selectLanguage("unknown"); err == nil {
 		t.Fatal("expected unknown language error")
+	}
+}
+
+func TestSelectHarness(t *testing.T) {
+	for _, name := range []string{"claude", "pi"} {
+		if _, err := selectHarness(name, harness.Config{}); err != nil {
+			t.Errorf("selectHarness(%q): %v", name, err)
+		}
+	}
+	if _, err := selectHarness("unknown", harness.Config{}); err == nil {
+		t.Fatal("expected unknown harness error")
 	}
 }
 

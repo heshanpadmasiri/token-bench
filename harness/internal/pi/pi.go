@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"token-bench/harness/internal/shared"
 )
 
 const (
@@ -28,13 +30,7 @@ type Config struct {
 }
 
 // TokenCount contains usage dimensions reported by Pi.
-type TokenCount struct {
-	Input      int `json:"input"`
-	Output     int `json:"output"`
-	Total      int `json:"total"`
-	CacheRead  int `json:"cacheRead"`
-	CacheWrite int `json:"cacheWrite"`
-}
+type TokenCount = shared.TokenCount
 
 type pi struct {
 	config    Config

@@ -23,7 +23,10 @@ const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--ta
 Implementations:
   task:      content-based-router
   language:  ballerina, go
-  harness:   pi
+  harness:   claude, pi
+
+Notes:
+  claude loads --skills as a temporary plugin; global Claude configuration may still be discovered.
 `
 
 type options struct {
@@ -237,10 +240,14 @@ func selectLanguage(name string) (language.Language, error) {
 }
 
 func selectHarness(name string, config harness.Config) (func() harness.Harness, error) {
-	if name != "pi" {
+	switch name {
+	case "claude":
+		return func() harness.Harness { return harness.NewClaude(config) }, nil
+	case "pi":
+		return func() harness.Harness { return harness.NewPi(config) }, nil
+	default:
 		return nil, fmt.Errorf("unknown harness %q", name)
 	}
-	return func() harness.Harness { return harness.NewPi(config) }, nil
 }
 
 func parseOptions(arguments []string) (options, error) {
