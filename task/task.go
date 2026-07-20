@@ -1,0 +1,44 @@
+// Package task provide the abstraction on top of each task used for the benchmark
+package task
+
+import "token-bench/task/internal/contentbasedrouting"
+
+type (
+	Task struct {
+		Name      string
+		Resources Resources
+		InitFn    func(res AllocResources) TaskHandle
+	}
+	TaskHandle interface {
+		Setup() (func() error, error) // Use Setup for setting things such as mock backend servers
+		Prompt() (string, error)      // This is the initial prompt we give the coding harness to start working on
+		// Use this to provide feedback to harness. Every time harness indicate completion last message we call
+		// this method and if it is non empty we feed it back to harness
+		Feedback() (string, error)
+		// When we no longer get feedback we call validation. Use this to run the hidden test set. This is always a pass or fail
+		Validation() (bool, error)
+	}
+	// Resources represents static resources that should be allocated by the benchmark for the given task
+	Resources struct {
+		NPorts int
+	}
+	// AllocResources represents static resources that are already allocated by the harness
+	AllocResources struct {
+		Ports []int
+	}
+)
+
+// NewContentBasedRouter initializes the Content-Based Router task.
+func NewContentBasedRouter() Task {
+	return Task{
+		Name:      "content-based-router",
+		Resources: Resources{NPorts: 3},
+		InitFn: func(resources AllocResources) TaskHandle {
+			return contentbasedrouting.New(resources.Ports)
+		},
+	}
+}
+
+func (a AllocResources) Cleanup() {
+	// TODO: implement this
+}

@@ -1,0 +1,18 @@
+import ballerina/http;
+
+configurable int appPort = ?;
+
+listener http:Listener routerListener = new (appPort);
+
+service / on routerListener {
+    resource function get health() returns string {
+        return "ok";
+    }
+
+    resource function post messages(http:Request request) returns http:Response {
+        http:Response response = new;
+        response.statusCode = http:STATUS_NOT_IMPLEMENTED;
+        response.setTextPayload("content-based router is not implemented");
+        return response;
+    }
+}

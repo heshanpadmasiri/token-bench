@@ -1,0 +1,13 @@
+Implement the Content-Based Router in the existing project.
+
+The application must expose `POST /messages` and keep the existing `GET /health` endpoint operational.
+
+Routing rules:
+
+- A top-level JSON string field `messageType` equal to `order` routes to `{{.OrdersURL}}`.
+- A top-level JSON string field `messageType` equal to `invoice` routes to `{{.InvoicesURL}}`.
+- Invalid JSON, a missing or non-string `messageType`, and every other value return HTTP 400 without contacting a backend.
+
+For routed requests, preserve the HTTP method, path, query, raw body, and end-to-end request headers. Do not forward hop-by-hop headers, `Host`, or `Content-Length`. Relay the backend status, body, and end-to-end response headers.
+
+The backend URLs are origins; append the incoming path and query. Do not leave the application running when finished because the benchmark starts it for checks.
