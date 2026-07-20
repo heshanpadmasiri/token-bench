@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"token-bench/harness"
+	benchresult "token-bench/result"
 )
 
 func TestParseOptions(t *testing.T) {
@@ -38,6 +38,6 @@ func TestSummarize(t *testing.T) {
 	}
 }
 
-func harnessTokenCount(input, output int) harness.TokenCount {
-	return harness.TokenCount{Input: input, Output: output}
+func harnessTokenCount(input, output int) benchresult.TokenCount {
+	return benchresult.TokenCount{Input: input, Output: output}
 }

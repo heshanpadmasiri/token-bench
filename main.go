@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -14,6 +13,7 @@ import (
 
 	"token-bench/harness"
 	"token-bench/language"
+	benchresult "token-bench/result"
 	"token-bench/task"
 )
 
@@ -34,13 +34,7 @@ type options struct {
 	target   string
 }
 
-type runResult struct {
-	Run         int                `json:"run"`
-	Passed      bool               `json:"passed"`
-	Corrections int                `json:"corrections"`
-	Tokens      harness.TokenCount `json:"tokens"`
-	Error       string             `json:"error,omitempty"`
-}
+type runResult = benchresult.Result
 
 type tokenSummary struct {
 	Input      float64 `json:"input"`
@@ -94,15 +88,23 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		result.Runs = append(result.Runs, executeRun(run, directory, taskDefinition, languageImplementation, harnessConstructor))
+		current := runResult{
+			SchemaVersion: benchresult.SchemaVersion,
+			Task:          taskDefinition.Name,
+			Language:      configuration.language,
+			Harness:       configuration.harness,
+			Run:           run,
+			RequestedRuns: configuration.runs,
+		}
+		current = executeRun(current, directory, taskDefinition, languageImplementation, harnessConstructor)
+		result.Runs = append(result.Runs, current)
+		if err := benchresult.Write(filepath.Join(directory, "result.json"), current); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 	result.Mean, result.Median = summarize(result.Runs)
-	resultsPath := filepath.Join(target, "results.json")
-	if err := writeReport(resultsPath, result); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	if err := printReport(result, resultsPath); err != nil {
+	if err := printReport(result, target); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -113,8 +115,8 @@ func main() {
 	}
 }
 
-func executeRun(run int, directory string, definition task.Task, implementation language.Language, newHarness func() harness.Harness) (result runResult) {
-	result.Run = run
+func executeRun(current runResult, directory string, definition task.Task, implementation language.Language, newHarness func() harness.Harness) (result runResult) {
+	result = current
 	ports, err := allocatePorts(definition.Resources.NPorts)
 	if err != nil {
 		result.Error = err.Error()
@@ -149,7 +151,10 @@ func executeRun(run int, directory string, definition task.Task, implementation 
 	}
 	defer func() {
 		if count, err := agent.TokenCount(); err == nil {
-			result.Tokens = count
+			result.Tokens = benchresult.TokenCount{
+				Input: count.Input, Output: count.Output, Total: count.Total,
+				CacheRead: count.CacheRead, CacheWrite: count.CacheWrite,
+			}
 		} else {
 			result.Error = joinErrors(result.Error, err.Error())
 		}
@@ -357,16 +362,7 @@ func median(values []float64) float64 {
 	return (ordered[middle-1] + ordered[middle]) / 2
 }
 
-// TODO:this should allow us to accumilate results (With a special --acum flag)
-func writeReport(path string, result report) error {
-	encoded, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(encoded, '\n'), 0o644)
-}
-
-func printReport(result report, path string) error {
+func printReport(result report, target string) error {
 	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	if _, err := fmt.Fprintln(writer, "RUN\tPASS\tFIXES\tINPUT\tOUTPUT\tCACHE READ\tCACHE WRITE\tTOTAL\tERROR"); err != nil {
 		return err
@@ -385,7 +381,7 @@ func printReport(result report, path string) error {
 	if err := writer.Flush(); err != nil {
 		return err
 	}
-	_, err := fmt.Println("JSON results:", path)
+	_, err := fmt.Println("JSON results:", filepath.Join(target, "run-*", "result.json"))
 	return err
 }
 
