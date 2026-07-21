@@ -58,9 +58,18 @@ type languageData struct {
 }
 
 type chartData struct {
-	Name   string
-	Height int
-	Boxes  []boxData
+	Name       string
+	Height     int
+	AxisY      int
+	AxisTickY  int
+	AxisLabelY int
+	Ticks      []tickData
+	Boxes      []boxData
+}
+
+type tickData struct {
+	X     float64
+	Value float64
 }
 
 type boxData struct {
@@ -249,7 +258,13 @@ func summarizeLanguage(key variantKey, runs []result.Result) languageData {
 func makeChart(name string, languages []languageData, metric func(languageData) []float64) chartData {
 	const plotStart = 500.0
 	const plotWidth = 650.0
-	chart := chartData{Name: name, Height: 45 + len(languages)*72}
+	chart := chartData{
+		Name:       name,
+		Height:     75 + len(languages)*72,
+		AxisY:      35 + len(languages)*72,
+		AxisTickY:  42 + len(languages)*72,
+		AxisLabelY: 60 + len(languages)*72,
+	}
 	var maximum float64
 	for _, language := range languages {
 		for _, value := range metric(language) {
@@ -260,6 +275,10 @@ func makeChart(name string, languages []languageData, metric func(languageData) 
 		maximum = 1
 	}
 	scale := func(value float64) float64 { return plotStart + value/maximum*plotWidth }
+	for index := 0; index <= 4; index++ {
+		value := maximum * float64(index) / 4
+		chart.Ticks = append(chart.Ticks, tickData{X: scale(value), Value: value})
+	}
 	for index, language := range languages {
 		values := append([]float64(nil), metric(language)...)
 		sort.Float64s(values)
