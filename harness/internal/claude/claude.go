@@ -288,8 +288,12 @@ func (c *claude) waitForStop(ctx context.Context) (stopEvent, error) {
 			line, readErr := reader.ReadString('\n')
 			if strings.HasSuffix(line, "\n") {
 				c.eventOffset += int64(len(line))
+				payload := strings.TrimSpace(line)
+				if payload == "" {
+					continue
+				}
 				var event stopEvent
-				if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &event); err != nil {
+				if err := json.Unmarshal([]byte(payload), &event); err != nil {
 					_ = file.Close()
 					return stopEvent{}, fmt.Errorf("decode Claude Stop hook: %w", err)
 				}

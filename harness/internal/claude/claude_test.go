@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,6 +99,31 @@ func TestCreateSkillsPluginSupportsSingleSkillDirectory(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected one staged skill, got %d", len(entries))
+	}
+}
+
+func TestWaitForStopSkipsBlankLinesBetweenEvents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	events := strings.Join([]string{
+		`{"hook_event_name":"Stop","transcript_path":"first.jsonl"}`,
+		"",
+		`{"hook_event_name":"Stop","transcript_path":"second.jsonl"}`,
+		"",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(events), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := New(Config{})
+	agent.eventsPath = path
+	for _, expected := range []string{"first.jsonl", "second.jsonl"} {
+		event, err := agent.waitForStop(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.TranscriptPath != expected {
+			t.Fatalf("expected transcript %q, got %q", expected, event.TranscriptPath)
+		}
 	}
 }
 
