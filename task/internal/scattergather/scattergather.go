@@ -364,7 +364,22 @@ func startBackend(port int, name string) (*backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	current := &backend{name: name, listener: listener}
+	amounts := map[string]float64{"alpha": 101.25, "beta": 99.5, "gamma": 103}
+	response, err := json.Marshal(map[string]any{
+		"supplier": name,
+		"amount":   amounts[name],
+		"currency": "USD",
+	})
+	if err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("create %s default response: %w", name, err)
+	}
+	current := &backend{
+		name:     name,
+		listener: listener,
+		status:   http.StatusOK,
+		response: string(response),
+	}
 	current.server = &http.Server{Handler: http.HandlerFunc(current.handle), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = current.server.Serve(listener) }()
 	return current, nil
@@ -389,17 +404,15 @@ func (b *backend) handle(writer http.ResponseWriter, request *http.Request) {
 	b.requests = append(b.requests, observedRequest{request.Method, request.URL.Path, request.URL.RawQuery, request.Header.Clone(), append([]byte(nil), body...)})
 	status, response, gate := b.status, b.response, b.gate
 	b.mu.Unlock()
-	if gate == nil {
-		http.Error(writer, "backend is not configured", http.StatusServiceUnavailable)
-		return
-	}
-	select {
-	case <-gate.arrive():
-	case <-request.Context().Done():
-		return
-	case <-time.After(backendTimeout):
-		http.Error(writer, "requests were not scattered concurrently", http.StatusGatewayTimeout)
-		return
+	if gate != nil {
+		select {
+		case <-gate.arrive():
+		case <-request.Context().Done():
+			return
+		case <-time.After(backendTimeout):
+			http.Error(writer, "requests were not scattered concurrently", http.StatusGatewayTimeout)
+			return
+		}
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(status)

@@ -41,13 +41,53 @@ func TestFeedbackAndValidation(t *testing.T) {
 	}
 }
 
+func TestBackendsReturnSampleQuotesBeforeChecks(t *testing.T) {
+	ports := testPorts(t, requiredPorts)
+	handle := New(ports)
+	cleanup, err := handle.Setup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+
+	for index, supplier := range []string{"alpha", "beta", "gamma"} {
+		response, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/quotes", ports[index+1]), "application/json", strings.NewReader(`{"product":"widget","quantity":2}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s backend returned HTTP %d: %s", supplier, response.StatusCode, body)
+		}
+		var quote struct {
+			Supplier string `json:"supplier"`
+		}
+		if err := json.Unmarshal(body, &quote); err != nil {
+			t.Fatalf("%s backend returned invalid JSON: %v", supplier, err)
+		}
+		if quote.Supplier != supplier {
+			t.Errorf("expected supplier %q, got %q", supplier, quote.Supplier)
+		}
+	}
+}
+
 func TestPromptIncludesBackendsAndExamples(t *testing.T) {
 	ports := []int{19080, 19081, 19082, 19083}
 	prompt, err := New(ports).Prompt()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"127.0.0.1:19081", "127.0.0.1:19082", "127.0.0.1:19083", `"$schema"`, `"product": "widget"`, `"quotes"`} {
+	for _, expected := range []string{
+		"127.0.0.1:19081", "127.0.0.1:19082", "127.0.0.1:19083",
+		`"$schema"`, `"product": "widget"`, `"quotes"`,
+		"already running and are owned by the benchmark",
+		"Do not start replacement backends",
+		"do not stop, kill, or otherwise modify any process listening on the backend ports",
+	} {
 		if !strings.Contains(prompt, expected) {
 			t.Errorf("prompt does not contain %q", expected)
 		}

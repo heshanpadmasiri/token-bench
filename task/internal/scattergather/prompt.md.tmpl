@@ -56,4 +56,6 @@ Each successful backend returns one JSON quote. Gather all three into JSON with 
 
 The order of `quotes` is insignificant. Backend quote objects vary with the request and must not be hard-coded. Return HTTP 200 with `Content-Type: application/json` only after gathering all three successful responses. If any backend returns a non-2xx response or cannot be reached, return HTTP 502 without a partial result.
 
-The three backend calls must run concurrently; a sequential implementation will not work. Do not leave the application running when finished because the benchmark starts it for checks.
+The three backend calls must run concurrently; a sequential implementation will not work.
+
+The three backend origins are already running and are owned by the benchmark. Use them directly. Do not start replacement backends, and do not stop, kill, or otherwise modify any process listening on the backend ports. You do not need to start the application yourself; the benchmark will build and start it after you finish.
