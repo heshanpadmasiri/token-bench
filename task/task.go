@@ -3,6 +3,7 @@ package task
 
 import (
 	"token-bench/task/internal/contentbasedrouting"
+	"token-bench/task/internal/contentenricher"
 	"token-bench/task/internal/deadletterchannel"
 	"token-bench/task/internal/scattergather"
 )
@@ -41,6 +42,18 @@ func NewContentBasedRouter() Task {
 		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}},
 		InitFn: func(resources AllocResources) TaskHandle {
 			return contentbasedrouting.New(resources.Ports)
+		},
+	}
+}
+
+// NewContentEnricher initializes the Content Enricher task.
+func NewContentEnricher() Task {
+	return Task{
+		Name:      "content-enricher",
+		Resources: Resources{NPorts: 3},
+		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}},
+		InitFn: func(resources AllocResources) TaskHandle {
+			return contentenricher.New(resources.Ports)
 		},
 	}
 }

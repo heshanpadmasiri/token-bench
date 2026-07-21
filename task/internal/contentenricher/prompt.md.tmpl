@@ -1,0 +1,88 @@
+Implement the Content Enricher pattern at `POST /messages`.
+
+## Input
+
+Each request is a JSON object containing a `user` object with a non-empty string `id`. Other fields may appear anywhere and must be preserved in the enriched message. For example:
+
+```json
+{
+  "messageId": "message-1042",
+  "user": {
+    "id": "user-1042",
+    "name": "Ada Lovelace",
+    "dateOfBirth": "1815-12-10"
+  },
+  "payload": {
+    "orderId": "order-73"
+  }
+}
+```
+
+Reject malformed JSON, a missing or invalid `user.id`, or any request that already contains either a top-level `address` field or a nested `user.address` field with HTTP 400. Do not query the database or call the downstream endpoint for a rejected request.
+
+## Database lookup
+
+PostgreSQL is already running with these connection details:
+
+- Host: `{{.DatabaseHost}}`
+- Port: `{{.DatabasePort}}`
+- Database: `{{.DatabaseName}}`
+- Username: `{{.DatabaseUser}}`
+- Password: `{{.DatabasePass}}`
+- Table: `{{.DatabaseTable}}`
+
+Look up the user by `user.id` in this table:
+
+```sql
+CREATE TABLE {{.DatabaseTable}} (
+    user_id TEXT PRIMARY KEY,
+    street TEXT NOT NULL,
+    city TEXT NOT NULL,
+    state TEXT NOT NULL,
+    postal_code TEXT NOT NULL,
+    country TEXT NOT NULL
+);
+```
+
+If no row exists, return HTTP 404 without calling the downstream endpoint. If the database lookup fails, return HTTP 503.
+
+For a found row, add this top-level field while preserving every original field and value:
+
+```json
+{
+  "messageId": "message-1042",
+  "user": {
+    "id": "user-1042",
+    "name": "Ada Lovelace",
+    "dateOfBirth": "1815-12-10"
+  },
+  "payload": {
+    "orderId": "order-73"
+  },
+  "address": {
+    "street": "12 Example Street",
+    "city": "London",
+    "state": "Greater London",
+    "postalCode": "SW1A 1AA",
+    "country": "GB"
+  }
+}
+```
+
+The database is already populated with data. Query it at request time; do not hard-code users or addresses.
+
+## Downstream delivery
+
+POST the complete enriched JSON body to this exact URL:
+
+```text
+{{.DownstreamURL}}
+```
+
+Only the JSON body must be forwarded; incoming headers and query parameters do not need to be preserved.
+
+- If downstream returns any 2xx status, return HTTP 202 with an empty body.
+- If downstream returns a 4xx or 5xx status, relay its status and body.
+- If downstream cannot be reached, return HTTP 502.
+
+PostgreSQL and the downstream endpoint are already running and are owned by the benchmark. Use them directly. Never stop, kill, replace, reconfigure, or otherwise modify either backend. Do not leave the application running when finished because the benchmark starts and stops it for checks.
