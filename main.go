@@ -22,7 +22,7 @@ import (
 const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--target=DIR] [--skills=DIR]
 
 Implementations:
-  task:      content-based-router, scatter-gather
+  task:      content-based-router, dead-letter-channel, scatter-gather
   language:  ballerina, go, java
   harness:   claude, pi
 
@@ -233,6 +233,8 @@ func selectTask(name string) (task.Task, error) {
 	switch name {
 	case "content-based-router":
 		return task.NewContentBasedRouter(), nil
+	case "dead-letter-channel":
+		return task.NewDeadLetterChannel(), nil
 	case "scatter-gather":
 		return task.NewScatterGather(), nil
 	default:

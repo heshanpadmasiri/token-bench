@@ -3,6 +3,7 @@ package task
 
 import (
 	"token-bench/task/internal/contentbasedrouting"
+	"token-bench/task/internal/deadletterchannel"
 	"token-bench/task/internal/scattergather"
 )
 
@@ -40,6 +41,18 @@ func NewContentBasedRouter() Task {
 		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}},
 		InitFn: func(resources AllocResources) TaskHandle {
 			return contentbasedrouting.New(resources.Ports)
+		},
+	}
+}
+
+// NewDeadLetterChannel initializes the Dead Letter Channel task.
+func NewDeadLetterChannel() Task {
+	return Task{
+		Name:      "dead-letter-channel",
+		Resources: Resources{NPorts: 2},
+		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}},
+		InitFn: func(resources AllocResources) TaskHandle {
+			return deadletterchannel.New(resources.Ports)
 		},
 	}
 }
