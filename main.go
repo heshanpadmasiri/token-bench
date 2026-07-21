@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"unicode"
 
 	"token-bench/harness"
 	"token-bench/language"
@@ -93,8 +94,8 @@ func main() {
 	}
 	result := report{Task: taskDefinition.Name, Language: configuration.language, Harness: configuration.harness, SkillsDir: configuration.skillsDir}
 	for run := 1; run <= configuration.runs; run++ {
-		directory := filepath.Join(target, fmt.Sprintf("run-%03d", run))
-		if err := os.Mkdir(directory, 0o755); err != nil {
+		directory, err := createRunDirectory(target, configuration.language, taskDefinition.Name, configuration.harness)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -363,6 +364,23 @@ func normalizeSkillsDir(path string) (string, error) {
 	return filepath.Clean(absolute), nil
 }
 
+func normalizeRunName(value string) string {
+	return strings.Map(func(character rune) rune {
+		if unicode.IsSpace(character) {
+			return '_'
+		}
+		return character
+	}, value)
+}
+
+func runDirectoryPrefix(language, task, harness string) string {
+	return fmt.Sprintf("%s-%s-%s-", normalizeRunName(language), normalizeRunName(task), normalizeRunName(harness))
+}
+
+func createRunDirectory(target, language, task, harness string) (string, error) {
+	return os.MkdirTemp(target, runDirectoryPrefix(language, task, harness)+"*")
+}
+
 func prepareTarget(target string) (string, error) {
 	if target == "" {
 		created, err := os.MkdirTemp("", "token-bench-")
@@ -449,7 +467,8 @@ func printReport(result report, target string) error {
 	if err := writer.Flush(); err != nil {
 		return err
 	}
-	_, err := fmt.Println("JSON results:", filepath.Join(target, "run-*", "result.json"))
+	pattern := runDirectoryPrefix(result.Language, result.Task, result.Harness) + "*"
+	_, err := fmt.Println("JSON results:", filepath.Join(target, pattern, "result.json"))
 	return err
 }
 
