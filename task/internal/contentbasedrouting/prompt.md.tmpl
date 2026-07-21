@@ -1,13 +1,70 @@
-Implement the Content-Based Router in the existing project.
+Implement the Content-Based Router at `POST /messages`.
 
-The application must expose `POST /messages` and keep the existing `GET /health` endpoint operational.
+## Input schema
 
-Routing rules:
+Requests must satisfy this JSON Schema (Draft 2020-12):
 
-- A top-level JSON string field `messageType` equal to `order` routes to `{{.OrdersURL}}`.
-- A top-level JSON string field `messageType` equal to `invoice` routes to `{{.InvoicesURL}}`.
-- Invalid JSON, a missing or non-string `messageType`, and every other value return HTTP 400 without contacting a backend.
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["messageType"],
+  "properties": {
+    "messageType": {
+      "type": "string",
+      "enum": ["order", "invoice"]
+    }
+  },
+  "additionalProperties": true
+}
+```
 
-For routed requests, preserve the HTTP method, path, query, raw body, and end-to-end request headers. Do not forward hop-by-hop headers, `Host`, or `Content-Length`. Relay the backend status, body, and end-to-end response headers.
+Invalid JSON or a request that does not satisfy the schema must return HTTP 400 without contacting a backend.
 
-The backend URLs are origins; append the incoming path and query. Do not leave the application running when finished because the benchmark starts it for checks.
+## Routing
+
+- `messageType: "order"` routes to `{{.OrdersURL}}`.
+- `messageType: "invoice"` routes to `{{.InvoicesURL}}`.
+
+The backend URLs are origins. Append the incoming path and query. Preserve the HTTP method, path, query, raw body, and end-to-end request headers. Do not forward hop-by-hop headers, `Host`, or `Content-Length`. Relay the backend status, body, and end-to-end response headers exactly; do not synthesize the sample responses.
+
+## Samples
+
+Order request JSON:
+
+```json
+{
+  "messageType": "order",
+  "id": "order-1042",
+  "payload": {
+    "amount": 42
+  }
+}
+```
+
+The benchmark orders backend responds with HTTP 201 and this JSON, which the server must relay:
+
+```json
+{
+  "backend": "orders"
+}
+```
+
+Invoice request JSON:
+
+```json
+{
+  "messageType": "invoice",
+  "id": "invoice-73"
+}
+```
+
+The benchmark invoices backend responds with HTTP 202 and this JSON, which the server must relay:
+
+```json
+{
+  "backend": "invoices"
+}
+```
+
+Do not leave the application running when finished because the benchmark starts it for checks.

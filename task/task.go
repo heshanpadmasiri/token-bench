@@ -10,6 +10,7 @@ type (
 	Task struct {
 		Name      string
 		Resources Resources
+		Endpoints []Endpoint
 		InitFn    func(res AllocResources) TaskHandle
 	}
 	TaskHandle interface {
@@ -36,6 +37,7 @@ func NewContentBasedRouter() Task {
 	return Task{
 		Name:      "content-based-router",
 		Resources: Resources{NPorts: 3},
+		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}},
 		InitFn: func(resources AllocResources) TaskHandle {
 			return contentbasedrouting.New(resources.Ports)
 		},
@@ -47,6 +49,7 @@ func NewScatterGather() Task {
 	return Task{
 		Name:      "scatter-gather",
 		Resources: Resources{NPorts: 4},
+		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/quotes"}},
 		InitFn: func(resources AllocResources) TaskHandle {
 			return scattergather.New(resources.Ports)
 		},

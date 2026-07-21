@@ -47,7 +47,7 @@ func TestPromptIncludesBackendsAndExamples(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"127.0.0.1:19081", "127.0.0.1:19082", "127.0.0.1:19083", `"product": "widget"`, `"quotes"`} {
+	for _, expected := range []string{"127.0.0.1:19081", "127.0.0.1:19082", "127.0.0.1:19083", `"$schema"`, `"product": "widget"`, `"quotes"`} {
 		if !strings.Contains(prompt, expected) {
 			t.Errorf("prompt does not contain %q", expected)
 		}
@@ -72,7 +72,16 @@ func startApplication(t *testing.T, ports []int) func() {
 	})
 	mux.HandleFunc("POST /quotes", func(writer http.ResponseWriter, request *http.Request) {
 		body, err := io.ReadAll(request.Body)
-		if err != nil || !json.Valid(body) {
+		var input map[string]any
+		if err != nil || json.Unmarshal(body, &input) != nil {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if _, ok := input["product"].(string); !ok {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if _, ok := input["quantity"].(float64); !ok {
 			writer.WriteHeader(http.StatusBadRequest)
 			return
 		}

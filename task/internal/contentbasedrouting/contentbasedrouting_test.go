@@ -8,9 +8,22 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestPromptIncludesBackendsSchemaAndSamples(t *testing.T) {
+	prompt, err := New([]int{19080, 19081, 19082}).Prompt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"127.0.0.1:19081", "127.0.0.1:19082", `"$schema"`, `"messageType": "order"`, `"backend": "invoices"`} {
+		if !strings.Contains(prompt, expected) {
+			t.Errorf("prompt does not contain %q", expected)
+		}
+	}
+}
 
 func TestFeedbackAndValidation(t *testing.T) {
 	ports := testPorts(t, requiredPorts)

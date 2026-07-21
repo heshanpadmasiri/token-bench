@@ -151,10 +151,6 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 		result.Error = "task allocated no application port"
 		return result
 	}
-	if err := implementation.SetupProject(directory, ports[0]); err != nil {
-		result.Error = err.Error()
-		return result
-	}
 	agent := newHarness()
 	if err := agent.Start(directory); err != nil {
 		result.Error = err.Error()
@@ -174,7 +170,18 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 		}
 	}()
 
-	prompt, err := handle.Prompt()
+	requirements, err := handle.Prompt()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	prompt, err := task.RenderPrompt(task.PromptConfig{
+		Language:          implementation.Name(),
+		InitializeCommand: implementation.InitializeCommand(),
+		Port:              ports[0],
+		Endpoints:         definition.Endpoints,
+		Requirements:      requirements,
+	})
 	if err != nil {
 		result.Error = err.Error()
 		return result
@@ -185,7 +192,7 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 	}
 
 	for {
-		stopProject, startErr := implementation.StartProject(directory)
+		stopProject, startErr := implementation.StartProject(directory, ports[0])
 		feedback := ""
 		if startErr != nil {
 			feedback = fmt.Sprintf("The application failed to start. Exact diagnosis:\n%s", startErr)

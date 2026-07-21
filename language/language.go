@@ -9,8 +9,9 @@ import (
 
 type (
 	Language interface {
-		SetupProject(workingDir string, port int) error
-		StartProject(workingDir string) (func() error, error)
+		Name() string
+		InitializeCommand() string
+		StartProject(workingDir string, port int) (func() error, error)
 	}
 )
 

@@ -1,28 +1,19 @@
-// Package golang implements Go project setup and execution.
+// Package golang implements Go prompt metadata and project execution.
 package golang
 
 import (
 	"bytes"
-	"embed"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"syscall"
-	"text/template"
 	"time"
 )
 
-//go:embed templates/*
-var projectTemplates embed.FS
-
-type golang struct {
-	port int
-}
+type golang struct{}
 
 type process struct {
 	command *exec.Cmd
@@ -32,41 +23,22 @@ type process struct {
 	stopErr error
 }
 
-type templateData struct {
-	Port int
-}
-
 // New initializes the private Go implementation.
 func New() *golang {
 	return &golang{}
 }
 
-func (g *golang) SetupProject(workingDir string, port int) error {
-	if port < 1 || port > 65535 {
-		return fmt.Errorf("invalid application port %d", port)
-	}
-	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		return fmt.Errorf("create Go project: %w", err)
-	}
-	files := []struct {
-		templatePath string
-		outputPath   string
-	}{
-		{"templates/go.mod.tmpl", "go.mod"},
-		{"templates/main.go.tmpl", "main.go"},
-	}
-	for _, file := range files {
-		if err := render(file.templatePath, filepath.Join(workingDir, file.outputPath), templateData{Port: port}); err != nil {
-			return err
-		}
-	}
-	g.port = port
-	return nil
+func (g *golang) Name() string {
+	return "Go"
 }
 
-func (g *golang) StartProject(workingDir string) (func() error, error) {
-	if g.port == 0 {
-		return nil, errors.New("Go project is not set up")
+func (g *golang) InitializeCommand() string {
+	return "go mod init token-bench-target"
+}
+
+func (g *golang) StartProject(workingDir string, port int) (func() error, error) {
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid application port %d", port)
 	}
 	if _, err := exec.LookPath("go"); err != nil {
 		return nil, fmt.Errorf("find go: %w", err)
@@ -84,7 +56,7 @@ func (g *golang) StartProject(workingDir string) (func() error, error) {
 		_ = running.command.Wait()
 		close(running.done)
 	}()
-	if err := waitForHealth(running, g.port); err != nil {
+	if err := waitForHealth(running, port); err != nil {
 		_ = running.stop()
 		return nil, fmt.Errorf("start Go service: %w\n%s", err, running.output.String())
 	}
@@ -147,25 +119,6 @@ func waitForHealth(running *process, port int) error {
 		case <-ticker.C:
 		}
 	}
-}
-
-func render(templatePath, outputPath string, data templateData) error {
-	content, err := projectTemplates.ReadFile(templatePath)
-	if err != nil {
-		return fmt.Errorf("read template %s: %w", templatePath, err)
-	}
-	parsed, err := template.New(filepath.Base(templatePath)).Parse(string(content))
-	if err != nil {
-		return fmt.Errorf("parse template %s: %w", templatePath, err)
-	}
-	var output bytes.Buffer
-	if err := parsed.Execute(&output, data); err != nil {
-		return fmt.Errorf("render template %s: %w", templatePath, err)
-	}
-	if err := os.WriteFile(outputPath, output.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", outputPath, err)
-	}
-	return nil
 }
 
 type lockedBuffer struct {

@@ -1,41 +1,16 @@
 package golang
 
-import (
-	"os"
-	"path/filepath"
-	"strings"
-	"testing"
-)
+import "testing"
 
-func TestSetupProject(t *testing.T) {
-	directory := t.TempDir()
+func TestPromptMetadata(t *testing.T) {
 	implementation := New()
-	if err := implementation.SetupProject(directory, 19080); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"go.mod", "main.go"} {
-		if _, err := os.Stat(filepath.Join(directory, name)); err != nil {
-			t.Errorf("%s was not generated: %v", name, err)
-		}
-	}
-	module, err := os.ReadFile(filepath.Join(directory, "go.mod"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(module), "go 1.26.5") {
-		t.Fatalf("unexpected go.mod: %s", module)
-	}
-	main, err := os.ReadFile(filepath.Join(directory, "main.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(main), "const appPort = 19080") {
-		t.Fatalf("unexpected main.go: %s", main)
+	if implementation.Name() != "Go" || implementation.InitializeCommand() != "go mod init token-bench-target" {
+		t.Fatalf("unexpected prompt metadata: %q %q", implementation.Name(), implementation.InitializeCommand())
 	}
 }
 
-func TestSetupProjectRejectsInvalidPort(t *testing.T) {
-	if err := New().SetupProject(t.TempDir(), 0); err == nil {
+func TestStartProjectRejectsInvalidPort(t *testing.T) {
+	if _, err := New().StartProject(t.TempDir(), 0); err == nil {
 		t.Fatal("expected invalid port error")
 	}
 }

@@ -1,0 +1,13 @@
+Create a complete {{.Language}} HTTP server project in the empty working directory. Initialize the project with:
+
+```sh
+{{.InitializeCommand}}
+```
+
+The server must listen on port `{{.Port}}` and expose all of these endpoints:
+
+{{range .Endpoints}}- `{{.Method}} {{.Path}}`
+{{end}}
+`GET /health` must return a successful 2xx response when the server is ready. Create every source and project file needed to initialize, build, and run the application.
+
+{{.Requirements}}

@@ -184,6 +184,14 @@ func (s *scatterGather) Feedback() (string, error) {
 			backendResponses: []string{`{}`, `{}`, `{}`},
 			expectedStatus:   http.StatusBadRequest,
 		},
+		{
+			name:             "schema violation returns 400",
+			body:             `{"product":"widget","quantity":"2"}`,
+			header:           http.Header{"Content-Type": {"application/json"}},
+			backendStatuses:  []int{http.StatusOK, http.StatusOK, http.StatusOK},
+			backendResponses: []string{`{}`, `{}`, `{}`},
+			expectedStatus:   http.StatusBadRequest,
+		},
 	})
 	return result.feedback, nil
 }
@@ -212,6 +220,14 @@ func (s *scatterGather) Validation() (bool, error) {
 		{
 			name:             "hidden malformed JSON",
 			body:             `not-json`,
+			header:           http.Header{"Content-Type": {"application/json"}},
+			backendStatuses:  []int{http.StatusOK, http.StatusOK, http.StatusOK},
+			backendResponses: []string{`{}`, `{}`, `{}`},
+			expectedStatus:   http.StatusBadRequest,
+		},
+		{
+			name:             "hidden missing required field",
+			body:             `{"quantity":3}`,
 			header:           http.Header{"Content-Type": {"application/json"}},
 			backendStatuses:  []int{http.StatusOK, http.StatusOK, http.StatusOK},
 			backendResponses: []string{`{}`, `{}`, `{}`},

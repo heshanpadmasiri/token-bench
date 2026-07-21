@@ -1,6 +1,29 @@
-Implement the Scatter-Gather pattern in the existing project.
+Implement the Scatter-Gather pattern at `POST /quotes`.
 
-The application must expose `POST /quotes` and keep the existing `GET /health` endpoint operational. For each valid JSON request, concurrently send the request to all three backend origins:
+## Input schema
+
+Requests must satisfy this JSON Schema (Draft 2020-12):
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["product", "quantity"],
+  "properties": {
+    "product": {
+      "type": "string"
+    },
+    "quantity": {
+      "type": "number"
+    }
+  },
+  "additionalProperties": true
+}
+```
+
+Invalid JSON or a request that does not satisfy the schema must return HTTP 400 without contacting a backend.
+
+For each valid request, concurrently send the request to all three backend origins:
 
 - Alpha: `{{.AlphaURL}}`
 - Beta: `{{.BetaURL}}`
@@ -8,7 +31,18 @@ The application must expose `POST /quotes` and keep the existing `GET /health` e
 
 Append the incoming path and query to each origin. Preserve the HTTP method, raw body, and end-to-end request headers. Do not forward hop-by-hop headers, `Host`, or `Content-Length`.
 
-Each successful backend returns one JSON quote. Gather all three into a JSON response with this shape:
+## Samples
+
+Input JSON:
+
+```json
+{
+  "product": "widget",
+  "quantity": 2
+}
+```
+
+Each successful backend returns one JSON quote. Gather all three into JSON with this shape:
 
 ```json
 {
@@ -20,15 +54,6 @@ Each successful backend returns one JSON quote. Gather all three into a JSON res
 }
 ```
 
-The order of `quotes` is insignificant. For example, an input request body may be:
-
-```json
-{
-  "product": "widget",
-  "quantity": 2
-}
-```
-
-The backend quote objects vary with the request and must not be hard-coded. Return HTTP 200 with `Content-Type: application/json` only after gathering all three successful responses. If any backend returns a non-2xx response or cannot be reached, return HTTP 502 without a partial result. Invalid JSON returns HTTP 400 without contacting any backend.
+The order of `quotes` is insignificant. Backend quote objects vary with the request and must not be hard-coded. Return HTTP 200 with `Content-Type: application/json` only after gathering all three successful responses. If any backend returns a non-2xx response or cannot be reached, return HTTP 502 without a partial result.
 
 The three backend calls must run concurrently; a sequential implementation will not work. Do not leave the application running when finished because the benchmark starts it for checks.

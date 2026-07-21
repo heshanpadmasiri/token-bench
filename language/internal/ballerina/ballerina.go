@@ -1,28 +1,19 @@
-// Package ballerina implements Ballerina project setup and execution.
+// Package ballerina implements Ballerina prompt metadata and project execution.
 package ballerina
 
 import (
 	"bytes"
-	"embed"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"syscall"
-	"text/template"
 	"time"
 )
 
-//go:embed templates/*
-var projectTemplates embed.FS
-
-type ballerina struct {
-	port int
-}
+type ballerina struct{}
 
 type process struct {
 	command *exec.Cmd
@@ -32,42 +23,22 @@ type process struct {
 	stopErr error
 }
 
-type templateData struct {
-	Port int
-}
-
 // New initializes the private Ballerina implementation.
 func New() *ballerina {
 	return &ballerina{}
 }
 
-func (b *ballerina) SetupProject(workingDir string, port int) error {
-	if port < 1 || port > 65535 {
-		return fmt.Errorf("invalid application port %d", port)
-	}
-	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		return fmt.Errorf("create Ballerina project: %w", err)
-	}
-	files := []struct {
-		templatePath string
-		outputPath   string
-	}{
-		{"templates/Ballerina.toml.tmpl", "Ballerina.toml"},
-		{"templates/Config.toml.tmpl", "Config.toml"},
-		{"templates/main.bal.tmpl", "main.bal"},
-	}
-	for _, file := range files {
-		if err := render(file.templatePath, filepath.Join(workingDir, file.outputPath), templateData{Port: port}); err != nil {
-			return err
-		}
-	}
-	b.port = port
-	return nil
+func (b *ballerina) Name() string {
+	return "Ballerina"
 }
 
-func (b *ballerina) StartProject(workingDir string) (func() error, error) {
-	if b.port == 0 {
-		return nil, errors.New("Ballerina project is not set up")
+func (b *ballerina) InitializeCommand() string {
+	return "bal new ."
+}
+
+func (b *ballerina) StartProject(workingDir string, port int) (func() error, error) {
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid application port %d", port)
 	}
 	if _, err := exec.LookPath("bal"); err != nil {
 		return nil, fmt.Errorf("find bal: %w", err)
@@ -85,7 +56,7 @@ func (b *ballerina) StartProject(workingDir string) (func() error, error) {
 		_ = running.command.Wait()
 		close(running.done)
 	}()
-	if err := waitForHealth(running, b.port); err != nil {
+	if err := waitForHealth(running, port); err != nil {
 		_ = running.stop()
 		return nil, fmt.Errorf("start Ballerina service: %w\n%s", err, running.output.String())
 	}
@@ -148,25 +119,6 @@ func waitForHealth(running *process, port int) error {
 		case <-ticker.C:
 		}
 	}
-}
-
-func render(templatePath, outputPath string, data templateData) error {
-	content, err := projectTemplates.ReadFile(templatePath)
-	if err != nil {
-		return fmt.Errorf("read template %s: %w", templatePath, err)
-	}
-	parsed, err := template.New(filepath.Base(templatePath)).Parse(string(content))
-	if err != nil {
-		return fmt.Errorf("parse template %s: %w", templatePath, err)
-	}
-	var output bytes.Buffer
-	if err := parsed.Execute(&output, data); err != nil {
-		return fmt.Errorf("render template %s: %w", templatePath, err)
-	}
-	if err := os.WriteFile(outputPath, output.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", outputPath, err)
-	}
-	return nil
 }
 
 type lockedBuffer struct {
