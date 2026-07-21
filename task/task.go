@@ -1,7 +1,10 @@
 // Package task provide the abstraction on top of each task used for the benchmark
 package task
 
-import "token-bench/task/internal/contentbasedrouting"
+import (
+	"token-bench/task/internal/contentbasedrouting"
+	"token-bench/task/internal/scattergather"
+)
 
 type (
 	Task struct {
@@ -35,6 +38,17 @@ func NewContentBasedRouter() Task {
 		Resources: Resources{NPorts: 3},
 		InitFn: func(resources AllocResources) TaskHandle {
 			return contentbasedrouting.New(resources.Ports)
+		},
+	}
+}
+
+// NewScatterGather initializes the Scatter-Gather task.
+func NewScatterGather() Task {
+	return Task{
+		Name:      "scatter-gather",
+		Resources: Resources{NPorts: 4},
+		InitFn: func(resources AllocResources) TaskHandle {
+			return scattergather.New(resources.Ports)
 		},
 	}
 }

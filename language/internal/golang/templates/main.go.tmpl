@@ -13,8 +13,5 @@ func main() {
 	mux.HandleFunc("GET /health", func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write([]byte("ok"))
 	})
-	mux.HandleFunc("POST /messages", func(writer http.ResponseWriter, _ *http.Request) {
-		http.Error(writer, "content-based router is not implemented", http.StatusNotImplemented)
-	})
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", appPort), mux))
 }

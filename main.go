@@ -21,7 +21,7 @@ import (
 const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--target=DIR] [--skills=DIR]
 
 Implementations:
-  task:      content-based-router
+  task:      content-based-router, scatter-gather
   language:  ballerina, go
   harness:   claude, pi
 
@@ -222,10 +222,14 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 }
 
 func selectTask(name string) (task.Task, error) {
-	if name != "content-based-router" {
+	switch name {
+	case "content-based-router":
+		return task.NewContentBasedRouter(), nil
+	case "scatter-gather":
+		return task.NewScatterGather(), nil
+	default:
 		return task.Task{}, fmt.Errorf("unknown task %q", name)
 	}
-	return task.NewContentBasedRouter(), nil
 }
 
 func selectLanguage(name string) (language.Language, error) {

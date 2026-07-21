@@ -42,6 +42,17 @@ func writeTestFile(path string) error {
 	return os.WriteFile(path, []byte("skill"), 0o644)
 }
 
+func TestSelectTask(t *testing.T) {
+	for _, name := range []string{"content-based-router", "scatter-gather"} {
+		if _, err := selectTask(name); err != nil {
+			t.Errorf("selectTask(%q): %v", name, err)
+		}
+	}
+	if _, err := selectTask("unknown"); err == nil {
+		t.Fatal("expected unknown task error")
+	}
+}
+
 func TestSelectLanguage(t *testing.T) {
 	for _, name := range []string{"ballerina", "go"} {
 		if _, err := selectLanguage(name); err != nil {

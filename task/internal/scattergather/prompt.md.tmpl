@@ -1,0 +1,34 @@
+Implement the Scatter-Gather pattern in the existing project.
+
+The application must expose `POST /quotes` and keep the existing `GET /health` endpoint operational. For each valid JSON request, concurrently send the request to all three backend origins:
+
+- Alpha: `{{.AlphaURL}}`
+- Beta: `{{.BetaURL}}`
+- Gamma: `{{.GammaURL}}`
+
+Append the incoming path and query to each origin. Preserve the HTTP method, raw body, and end-to-end request headers. Do not forward hop-by-hop headers, `Host`, or `Content-Length`.
+
+Each successful backend returns one JSON quote. Gather all three into a JSON response with this shape:
+
+```json
+{
+  "quotes": [
+    {"supplier": "alpha", "amount": 101.25, "currency": "USD"},
+    {"supplier": "beta", "amount": 99.50, "currency": "USD"},
+    {"supplier": "gamma", "amount": 103.00, "currency": "USD"}
+  ]
+}
+```
+
+The order of `quotes` is insignificant. For example, an input request body may be:
+
+```json
+{
+  "product": "widget",
+  "quantity": 2
+}
+```
+
+The backend quote objects vary with the request and must not be hard-coded. Return HTTP 200 with `Content-Type: application/json` only after gathering all three successful responses. If any backend returns a non-2xx response or cannot be reached, return HTTP 502 without a partial result. Invalid JSON returns HTTP 400 without contacting any backend.
+
+The three backend calls must run concurrently; a sequential implementation will not work. Do not leave the application running when finished because the benchmark starts it for checks.
