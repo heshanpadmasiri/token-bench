@@ -5,6 +5,7 @@ package language
 import (
 	"token-bench/language/internal/ballerina"
 	"token-bench/language/internal/golang"
+	"token-bench/language/internal/java"
 )
 
 type (
@@ -23,4 +24,9 @@ func NewBallerina() Language {
 // NewGo initializes the Go language implementation.
 func NewGo() Language {
 	return golang.New()
+}
+
+// NewJava initializes the Java language implementation.
+func NewJava() Language {
+	return java.New()
 }

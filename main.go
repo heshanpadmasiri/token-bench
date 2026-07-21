@@ -23,7 +23,7 @@ const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--ta
 
 Implementations:
   task:      content-based-router, scatter-gather
-  language:  ballerina, go
+  language:  ballerina, go, java
   harness:   claude, pi
 
 Notes:
@@ -246,6 +246,8 @@ func selectLanguage(name string) (language.Language, error) {
 		return language.NewBallerina(), nil
 	case "go":
 		return language.NewGo(), nil
+	case "java":
+		return language.NewJava(), nil
 	default:
 		return nil, fmt.Errorf("unknown language %q", name)
 	}

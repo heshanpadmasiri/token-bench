@@ -55,7 +55,7 @@ func TestSelectTask(t *testing.T) {
 }
 
 func TestSelectLanguage(t *testing.T) {
-	for _, name := range []string{"ballerina", "go"} {
+	for _, name := range []string{"ballerina", "go", "java"} {
 		if _, err := selectLanguage(name); err != nil {
 			t.Errorf("selectLanguage(%q): %v", name, err)
 		}
