@@ -458,7 +458,7 @@ func pasteMessage(ctx context.Context, paneID, message string) error {
 	if _, err := command(ctx, "tmux", "load-buffer", "-b", buffer, path); err != nil {
 		return err
 	}
-	if _, err := command(ctx, "tmux", "paste-buffer", "-d", "-b", buffer, "-t", paneID); err != nil {
+	if _, err := command(ctx, "tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", paneID); err != nil {
 		return err
 	}
 	_, err = command(ctx, "tmux", "send-keys", "-t", paneID, "Enter")
