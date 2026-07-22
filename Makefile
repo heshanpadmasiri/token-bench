@@ -3,7 +3,7 @@
 GO_SOURCES := $(shell find . -name '*.go' -type f)
 
 RUNS ?= 3
-LANGUAGES ?= ballerina go java
+LANGUAGES ?= ballerina go java python
 HARNESS ?= claude
 SCENARIO ?=
 TARGET_DIR ?=

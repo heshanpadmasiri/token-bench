@@ -36,6 +36,10 @@ func (b *ballerina) InitializeCommand() string {
 	return "bal new ."
 }
 
+func (b *ballerina) TaskPromptSuffix() string {
+	return ""
+}
+
 func (b *ballerina) StartProject(workingDir string, port int) (func() error, error) {
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("invalid application port %d", port)

@@ -21,6 +21,7 @@ type Endpoint struct {
 type PromptConfig struct {
 	Language          string
 	InitializeCommand string
+	TaskPromptSuffix  string
 	Port              int // Deprecated: use Ports. Retained for callers defining a single listener.
 	Ports             []int
 	Endpoints         []Endpoint
@@ -36,6 +37,7 @@ type renderedEndpoint struct {
 type promptData struct {
 	Language          string
 	InitializeCommand string
+	TaskPromptSuffix  string
 	Endpoints         []renderedEndpoint
 	Requirements      string
 }
@@ -56,6 +58,7 @@ func RenderPrompt(config PromptConfig) (string, error) {
 	return renderPrompt(promptData{
 		Language:          config.Language,
 		InitializeCommand: config.InitializeCommand,
+		TaskPromptSuffix:  config.TaskPromptSuffix,
 		Endpoints:         endpoints,
 		Requirements:      config.Requirements,
 	})
@@ -77,6 +80,7 @@ func BenchmarkPromptTemplate(definition Task) (string, error) {
 	return renderPrompt(promptData{
 		Language:          "{{.Language}}",
 		InitializeCommand: "{{.InitializeCommand}}",
+		TaskPromptSuffix:  "{{.TaskPromptSuffix}}",
 		Endpoints:         endpoints,
 		Requirements:      definition.RequirementsTemplate,
 	})

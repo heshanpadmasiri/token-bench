@@ -36,6 +36,10 @@ func (j *java) InitializeCommand() string {
 	return "mvn -B archetype:generate -DgroupId=tokenbench -DartifactId=token-bench-target -DarchetypeGroupId=org.apache.maven.archetypes -DarchetypeArtifactId=maven-archetype-quickstart -DarchetypeVersion=1.5 -DjavaCompilerVersion=21 -DinteractiveMode=false && cp -R token-bench-target/. . && rm -rf token-bench-target"
 }
 
+func (j *java) TaskPromptSuffix() string {
+	return ""
+}
+
 func (j *java) StartProject(workingDir string, port int) (func() error, error) {
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("invalid application port %d", port)

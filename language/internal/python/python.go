@@ -1,8 +1,9 @@
-// Package golang implements Go prompt metadata and project execution.
-package golang
+// Package python implements Python prompt metadata and project execution.
+package python
 
 import (
 	"bytes"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +14,10 @@ import (
 	"time"
 )
 
-type golang struct{}
+//go:embed task_prompt_suffix.md
+var taskPromptSuffix string
+
+type python struct{}
 
 type process struct {
 	command *exec.Cmd
@@ -23,38 +27,38 @@ type process struct {
 	stopErr error
 }
 
-// New initializes the private Go implementation.
-func New() *golang {
-	return &golang{}
+// New initializes the private Python implementation.
+func New() *python {
+	return &python{}
 }
 
-func (g *golang) Name() string {
-	return "Go"
+func (*python) Name() string {
+	return "Python"
 }
 
-func (g *golang) InitializeCommand() string {
-	return "go mod init token-bench-target"
+func (*python) InitializeCommand() string {
+	return "uv init --app --name token-bench-target --no-readme --vcs none --python 3.12 ."
 }
 
-func (g *golang) TaskPromptSuffix() string {
-	return ""
+func (*python) TaskPromptSuffix() string {
+	return taskPromptSuffix
 }
 
-func (g *golang) StartProject(workingDir string, port int) (func() error, error) {
+func (*python) StartProject(workingDir string, port int) (func() error, error) {
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("invalid application port %d", port)
 	}
-	if _, err := exec.LookPath("go"); err != nil {
-		return nil, fmt.Errorf("find go: %w", err)
+	if _, err := exec.LookPath("uv"); err != nil {
+		return nil, fmt.Errorf("find uv: %w", err)
 	}
 	running := &process{done: make(chan struct{})}
-	running.command = exec.Command("go", "run", ".")
+	running.command = exec.Command("uv", "run", "python", "main.py")
 	running.command.Dir = workingDir
 	running.command.Stdout = &running.output
 	running.command.Stderr = &running.output
 	running.command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := running.command.Start(); err != nil {
-		return nil, fmt.Errorf("start go run: %w", err)
+		return nil, fmt.Errorf("start uv application: %w", err)
 	}
 	go func() {
 		_ = running.command.Wait()
@@ -62,7 +66,7 @@ func (g *golang) StartProject(workingDir string, port int) (func() error, error)
 	}()
 	if err := waitForHealth(running, port); err != nil {
 		_ = running.stop()
-		return nil, fmt.Errorf("start Go service: %w\n%s", err, running.output.String())
+		return nil, fmt.Errorf("start Python service: %w\n%s", err, running.output.String())
 	}
 	return running.stop, nil
 }
@@ -82,13 +86,13 @@ func (p *process) stop() error {
 		case <-time.After(3 * time.Second):
 		}
 		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			p.stopErr = fmt.Errorf("kill go process: %w", err)
+			p.stopErr = fmt.Errorf("kill uv process: %w", err)
 			return
 		}
 		select {
 		case <-p.done:
 		case <-time.After(3 * time.Second):
-			p.stopErr = errors.New("timed out waiting for go process to stop")
+			p.stopErr = errors.New("timed out waiting for uv process to stop")
 		}
 	})
 	return p.stopErr
@@ -104,7 +108,7 @@ func waitForHealth(running *process, port int) error {
 	for {
 		select {
 		case <-running.done:
-			return errors.New("go run exited before the health endpoint became ready")
+			return errors.New("uv application exited before the health endpoint became ready")
 		default:
 		}
 		response, err := client.Get(endpoint)
@@ -117,7 +121,7 @@ func waitForHealth(running *process, port int) error {
 		}
 		select {
 		case <-running.done:
-			return errors.New("go run exited before the health endpoint became ready")
+			return errors.New("uv application exited before the health endpoint became ready")
 		case <-deadline.C:
 			return errors.New("timed out waiting for GET /health")
 		case <-ticker.C:

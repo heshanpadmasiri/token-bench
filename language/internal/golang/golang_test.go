@@ -7,6 +7,9 @@ func TestPromptMetadata(t *testing.T) {
 	if implementation.Name() != "Go" || implementation.InitializeCommand() != "go mod init token-bench-target" {
 		t.Fatalf("unexpected prompt metadata: %q %q", implementation.Name(), implementation.InitializeCommand())
 	}
+	if implementation.TaskPromptSuffix() != "" {
+		t.Fatalf("unexpected task prompt suffix: %q", implementation.TaskPromptSuffix())
+	}
 }
 
 func TestStartProjectRejectsInvalidPort(t *testing.T) {

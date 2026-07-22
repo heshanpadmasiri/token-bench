@@ -23,7 +23,7 @@ const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--ta
 
 Implementations:
   task:      claim-check, content-based-router, content-enricher, dead-letter-channel, scatter-gather
-  language:  ballerina, go, java
+  language:  ballerina, go, java, python
   harness:   claude, pi
 
 Notes:
@@ -185,6 +185,7 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 	prompt, err := task.RenderPrompt(task.PromptConfig{
 		Language:          implementation.Name(),
 		InitializeCommand: implementation.InitializeCommand(),
+		TaskPromptSuffix:  implementation.TaskPromptSuffix(),
 		Ports:             ports,
 		Endpoints:         definition.Endpoints,
 		Requirements:      requirements,
@@ -260,6 +261,8 @@ func selectLanguage(name string) (language.Language, error) {
 		return language.NewGo(), nil
 	case "java":
 		return language.NewJava(), nil
+	case "python":
+		return language.NewPython(), nil
 	default:
 		return nil, fmt.Errorf("unknown language %q", name)
 	}

@@ -6,12 +6,14 @@ import (
 	"token-bench/language/internal/ballerina"
 	"token-bench/language/internal/golang"
 	"token-bench/language/internal/java"
+	"token-bench/language/internal/python"
 )
 
 type (
 	Language interface {
 		Name() string
 		InitializeCommand() string
+		TaskPromptSuffix() string
 		StartProject(workingDir string, port int) (func() error, error)
 	}
 )
@@ -29,4 +31,9 @@ func NewGo() Language {
 // NewJava initializes the Java language implementation.
 func NewJava() Language {
 	return java.New()
+}
+
+// NewPython initializes the Python language implementation.
+func NewPython() Language {
+	return python.New()
 }

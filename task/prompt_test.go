@@ -31,10 +31,43 @@ func TestBenchmarkPromptTemplateIncludesSharedAndTaskRequirements(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"{{.Language}}", "{{.InitializeCommand}}", "{{index .Ports 0}}", "Implement the Content-Based Router", "{{.OrdersURL}}"} {
+	for _, expected := range []string{"{{.Language}}", "{{.InitializeCommand}}", "{{index .Ports 0}}", "Implement the Content-Based Router", "{{.OrdersURL}}", "{{.TaskPromptSuffix}}"} {
 		if !strings.Contains(prompt, expected) {
 			t.Errorf("prompt template does not contain %q", expected)
 		}
+	}
+}
+
+func TestRenderPromptAppendsTaskPromptSuffix(t *testing.T) {
+	prompt, err := RenderPrompt(PromptConfig{
+		Language:          "Python",
+		InitializeCommand: "uv init .",
+		Port:              19080,
+		Requirements:      "task requirements",
+		TaskPromptSuffix:  "## Python project requirements\n\nUse uv.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirementsIndex := strings.Index(prompt, "task requirements")
+	suffixIndex := strings.Index(prompt, "## Python project requirements")
+	if requirementsIndex < 0 || suffixIndex <= requirementsIndex {
+		t.Fatalf("task prompt suffix was not appended after requirements:\n%s", prompt)
+	}
+}
+
+func TestRenderPromptOmitsEmptyTaskPromptSuffixWithoutExtraWhitespace(t *testing.T) {
+	prompt, err := RenderPrompt(PromptConfig{
+		Language:          "Go",
+		InitializeCommand: "go mod init token-bench-target",
+		Port:              19080,
+		Requirements:      "task requirements",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(prompt, "task requirements\n") {
+		t.Fatalf("empty suffix changed prompt ending: %q", prompt)
 	}
 }
 

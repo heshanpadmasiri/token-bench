@@ -11,3 +11,7 @@ The project must expose all of these endpoints on the specified fixed ports:
 Every listed `GET /health` endpoint must return a successful 2xx response when its service is ready. Create every source and project file needed to initialize, build, and run the application.
 
 {{.Requirements}}
+{{if .TaskPromptSuffix}}
+
+{{.TaskPromptSuffix}}
+{{end}}
