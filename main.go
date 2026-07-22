@@ -22,7 +22,7 @@ import (
 const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--target=DIR] [--skills=DIR]
 
 Implementations:
-  task:      content-based-router, content-enricher, dead-letter-channel, scatter-gather
+  task:      claim-check, content-based-router, content-enricher, dead-letter-channel, scatter-gather
   language:  ballerina, go, java
   harness:   claude, pi
 
@@ -179,7 +179,7 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 	prompt, err := task.RenderPrompt(task.PromptConfig{
 		Language:          implementation.Name(),
 		InitializeCommand: implementation.InitializeCommand(),
-		Port:              ports[0],
+		Ports:             ports,
 		Endpoints:         definition.Endpoints,
 		Requirements:      requirements,
 	})
@@ -231,6 +231,8 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 
 func selectTask(name string) (task.Task, error) {
 	switch name {
+	case "claim-check":
+		return task.NewClaimCheck(), nil
 	case "content-based-router":
 		return task.NewContentBasedRouter(), nil
 	case "content-enricher":

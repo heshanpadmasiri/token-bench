@@ -25,3 +25,23 @@ func TestRenderPromptIncludesSharedServerPreamble(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderPromptAssociatesEndpointsWithPorts(t *testing.T) {
+	prompt, err := RenderPrompt(PromptConfig{
+		Language:          "Go",
+		InitializeCommand: "go mod init token-bench-target",
+		Ports:             []int{19080, 19081},
+		Endpoints: []Endpoint{
+			{Method: "POST", Path: "/messages", PortIndex: 0},
+			{Method: "POST", Path: "/messages", PortIndex: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"`POST /messages` on port `19080`", "`POST /messages` on port `19081`"} {
+		if !strings.Contains(prompt, expected) {
+			t.Errorf("prompt does not contain %q", expected)
+		}
+	}
+}

@@ -2,6 +2,7 @@
 package task
 
 import (
+	"token-bench/task/internal/claimcheck"
 	"token-bench/task/internal/contentbasedrouting"
 	"token-bench/task/internal/contentenricher"
 	"token-bench/task/internal/deadletterchannel"
@@ -33,6 +34,23 @@ type (
 		Ports []int
 	}
 )
+
+// NewClaimCheck initializes the Claim Check task.
+func NewClaimCheck() Task {
+	return Task{
+		Name:      "claim-check",
+		Resources: Resources{NPorts: 5},
+		Endpoints: []Endpoint{
+			{Method: "GET", Path: "/health", PortIndex: 0},
+			{Method: "POST", Path: "/messages", PortIndex: 0},
+			{Method: "GET", Path: "/health", PortIndex: 1},
+			{Method: "POST", Path: "/messages", PortIndex: 1},
+		},
+		InitFn: func(resources AllocResources) TaskHandle {
+			return claimcheck.New(resources.Ports)
+		},
+	}
+}
 
 // NewContentBasedRouter initializes the Content-Based Router task.
 func NewContentBasedRouter() Task {

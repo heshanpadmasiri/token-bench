@@ -4,10 +4,10 @@ Create a complete {{.Language}} HTTP server project in the empty working directo
 {{.InitializeCommand}}
 ```
 
-The server must listen on port `{{.Port}}` and expose all of these endpoints:
+The project must expose all of these endpoints on the specified fixed ports:
 
-{{range .Endpoints}}- `{{.Method}} {{.Path}}`
+{{range .Endpoints}}- `{{.Method}} {{.Path}}` on port `{{.Port}}`
 {{end}}
-`GET /health` must return a successful 2xx response when the server is ready. Create every source and project file needed to initialize, build, and run the application.
+Every listed `GET /health` endpoint must return a successful 2xx response when its service is ready. Create every source and project file needed to initialize, build, and run the application.
 
 {{.Requirements}}

@@ -44,7 +44,7 @@ func writeTestFile(path string) error {
 }
 
 func TestSelectTask(t *testing.T) {
-	for _, name := range []string{"content-based-router", "content-enricher", "dead-letter-channel", "scatter-gather"} {
+	for _, name := range []string{"claim-check", "content-based-router", "content-enricher", "dead-letter-channel", "scatter-gather"} {
 		if _, err := selectTask(name); err != nil {
 			t.Errorf("selectTask(%q): %v", name, err)
 		}
