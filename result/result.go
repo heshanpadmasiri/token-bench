@@ -22,17 +22,18 @@ type TokenCount struct {
 
 // Result is the persisted outcome and normalized CLI configuration for one run.
 type Result struct {
-	SchemaVersion int        `json:"schemaVersion"`
-	Task          string     `json:"task"`
-	Language      string     `json:"language"`
-	Harness       string     `json:"harness"`
-	SkillsDir     string     `json:"skillsDir,omitempty"`
-	Run           int        `json:"run"`
-	RequestedRuns int        `json:"requestedRuns"`
-	Passed        bool       `json:"passed"`
-	Corrections   int        `json:"corrections"`
-	Tokens        TokenCount `json:"tokens"`
-	Error         string     `json:"error,omitempty"`
+	SchemaVersion  int        `json:"schemaVersion"`
+	Task           string     `json:"task"`
+	Language       string     `json:"language"`
+	Harness        string     `json:"harness"`
+	SkillsDir      string     `json:"skillsDir,omitempty"`
+	PromptTemplate string     `json:"promptTemplate,omitempty"`
+	Run            int        `json:"run"`
+	RequestedRuns  int        `json:"requestedRuns"`
+	Passed         bool       `json:"passed"`
+	Corrections    int        `json:"corrections"`
+	Tokens         TokenCount `json:"tokens"`
+	Error          string     `json:"error,omitempty"`
 }
 
 // Write persists one result as indented JSON.

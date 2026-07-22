@@ -9,15 +9,16 @@ import (
 func TestWriteRead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "result.json")
 	want := Result{
-		SchemaVersion: SchemaVersion,
-		Task:          "router",
-		Language:      "go",
-		Harness:       "pi",
-		SkillsDir:     "/tmp/benchmark-skills",
-		Run:           1,
-		RequestedRuns: 2,
-		Passed:        true,
-		Tokens:        TokenCount{Input: 10, Output: 20, Total: 30},
+		SchemaVersion:  SchemaVersion,
+		Task:           "router",
+		Language:       "go",
+		Harness:        "pi",
+		SkillsDir:      "/tmp/benchmark-skills",
+		PromptTemplate: "benchmark prompt template",
+		Run:            1,
+		RequestedRuns:  2,
+		Passed:         true,
+		Tokens:         TokenCount{Input: 10, Output: 20, Total: 30},
 	}
 	if err := Write(path, want); err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ import (
 	"sort"
 
 	"token-bench/result"
+	"token-bench/task"
 )
 
 //go:embed report.html.tmpl
@@ -33,12 +34,13 @@ type reportData struct {
 }
 
 type taskData struct {
-	Name        string
-	TotalRuns   int
-	FailedRuns  int
-	NoSuccesses bool
-	Languages   []languageData
-	Charts      []chartData
+	Name           string
+	PromptTemplate string
+	TotalRuns      int
+	FailedRuns     int
+	NoSuccesses    bool
+	Languages      []languageData
+	Charts         []chartData
 }
 
 type languageData struct {
@@ -176,10 +178,23 @@ type variantKey struct {
 func aggregate(discovered []discoveredResult) (reportData, error) {
 	harnesses := make(map[string]struct{})
 	skillsDirs := make(map[string]struct{})
+	promptTemplates := make(map[string]string)
 	byTask := make(map[string]map[variantKey][]result.Result)
 	data := reportData{TotalRuns: len(discovered)}
 	for _, item := range discovered {
 		current := item.value
+		promptTemplate := current.PromptTemplate
+		if promptTemplate == "" {
+			var err error
+			promptTemplate, err = task.BenchmarkPromptTemplateFor(current.Task)
+			if err != nil {
+				return reportData{}, fmt.Errorf("resolve prompt template for legacy result %s: %w", item.path, err)
+			}
+		}
+		if existing, found := promptTemplates[current.Task]; found && existing != promptTemplate {
+			return reportData{}, fmt.Errorf("results contain multiple benchmark prompt templates for task %q", current.Task)
+		}
+		promptTemplates[current.Task] = promptTemplate
 		harnesses[current.Harness] = struct{}{}
 		skillsDirs[current.SkillsDir] = struct{}{}
 		if !current.Passed {
@@ -207,7 +222,7 @@ func aggregate(discovered []discoveredResult) (reportData, error) {
 	}
 	taskNames := sortedKeys(byTask)
 	for _, taskName := range taskNames {
-		task := taskData{Name: taskName}
+		task := taskData{Name: taskName, PromptTemplate: promptTemplates[taskName]}
 		for _, key := range sortedVariantKeys(byTask[taskName]) {
 			runs := byTask[taskName][key]
 			language := summarizeLanguage(key, runs)

@@ -13,6 +13,9 @@
     .muted { color: #667085; }
     .warning { padding: .9rem 1rem; margin: 1rem 0; border: 1px solid #f4b740; border-radius: .5rem; color: #7a4d00; background: #fff8e6; font-weight: 650; }
     .task { margin: 2rem 0; padding: 1.5rem; border-radius: .75rem; background: white; box-shadow: 0 1px 5px #17203318; }
+    details { margin: 1rem 0 1.5rem; border: 1px solid #e5e9f0; border-radius: .5rem; }
+    summary { padding: .8rem 1rem; cursor: pointer; font-weight: 700; }
+    pre { margin: 0; padding: 1rem; border-top: 1px solid #e5e9f0; overflow-x: auto; white-space: pre-wrap; background: #f8fafc; }
     .charts { display: grid; grid-template-columns: 1fr; gap: 1rem; }
     figure { min-width: 0; margin: 0; padding: 1rem; border: 1px solid #e5e9f0; border-radius: .5rem; }
     figcaption { font-size: 1.1rem; font-weight: 700; }
@@ -48,6 +51,10 @@
   <section class="task">
     <h2>{{.Name}}</h2>
     <div class="muted">{{.TotalRuns}} runs across {{len .Languages}} language/skills variants; averages use successful runs only.</div>
+    <details>
+      <summary>Benchmark prompt template</summary>
+      <pre>{{.PromptTemplate}}</pre>
+    </details>
     {{if .NoSuccesses}}<div class="warning">Warning: this task has no successful runs, so averages are unavailable.</div>{{else if .FailedRuns}}<div class="warning">Warning: {{.FailedRuns}} runs failed for this task and are excluded from averages.</div>{{end}}
 
     <div class="charts">

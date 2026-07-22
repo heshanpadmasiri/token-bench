@@ -11,10 +11,11 @@ import (
 
 type (
 	Task struct {
-		Name      string
-		Resources Resources
-		Endpoints []Endpoint
-		InitFn    func(res AllocResources) TaskHandle
+		Name                 string
+		Resources            Resources
+		Endpoints            []Endpoint
+		RequirementsTemplate string
+		InitFn               func(res AllocResources) TaskHandle
 	}
 	TaskHandle interface {
 		Setup() (func() error, error) // Use Setup for setting things such as mock backend servers
@@ -46,6 +47,7 @@ func NewClaimCheck() Task {
 			{Method: "GET", Path: "/health", PortIndex: 1},
 			{Method: "POST", Path: "/messages", PortIndex: 1},
 		},
+		RequirementsTemplate: claimcheck.PromptTemplate(),
 		InitFn: func(resources AllocResources) TaskHandle {
 			return claimcheck.New(resources.Ports)
 		},
@@ -55,9 +57,10 @@ func NewClaimCheck() Task {
 // NewContentBasedRouter initializes the Content-Based Router task.
 func NewContentBasedRouter() Task {
 	return Task{
-		Name:      "content-based-router",
-		Resources: Resources{NPorts: 3},
-		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}},
+		Name:                 "content-based-router",
+		Resources:            Resources{NPorts: 3},
+		Endpoints:            []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}},
+		RequirementsTemplate: contentbasedrouting.PromptTemplate(),
 		InitFn: func(resources AllocResources) TaskHandle {
 			return contentbasedrouting.New(resources.Ports)
 		},
@@ -67,9 +70,10 @@ func NewContentBasedRouter() Task {
 // NewContentEnricher initializes the Content Enricher task.
 func NewContentEnricher() Task {
 	return Task{
-		Name:      "content-enricher",
-		Resources: Resources{NPorts: 3},
-		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}},
+		Name:                 "content-enricher",
+		Resources:            Resources{NPorts: 3},
+		Endpoints:            []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}},
+		RequirementsTemplate: contentenricher.PromptTemplate(),
 		InitFn: func(resources AllocResources) TaskHandle {
 			return contentenricher.New(resources.Ports)
 		},
@@ -79,9 +83,10 @@ func NewContentEnricher() Task {
 // NewDeadLetterChannel initializes the Dead Letter Channel task.
 func NewDeadLetterChannel() Task {
 	return Task{
-		Name:      "dead-letter-channel",
-		Resources: Resources{NPorts: 2},
-		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}},
+		Name:                 "dead-letter-channel",
+		Resources:            Resources{NPorts: 2},
+		Endpoints:            []Endpoint{{Method: "GET", Path: "/health"}},
+		RequirementsTemplate: deadletterchannel.PromptTemplate(),
 		InitFn: func(resources AllocResources) TaskHandle {
 			return deadletterchannel.New(resources.Ports)
 		},
@@ -91,9 +96,10 @@ func NewDeadLetterChannel() Task {
 // NewScatterGather initializes the Scatter-Gather task.
 func NewScatterGather() Task {
 	return Task{
-		Name:      "scatter-gather",
-		Resources: Resources{NPorts: 4},
-		Endpoints: []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/quotes"}},
+		Name:                 "scatter-gather",
+		Resources:            Resources{NPorts: 4},
+		Endpoints:            []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/quotes"}},
+		RequirementsTemplate: scattergather.PromptTemplate(),
 		InitFn: func(resources AllocResources) TaskHandle {
 			return scattergather.New(resources.Ports)
 		},

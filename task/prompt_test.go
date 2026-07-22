@@ -26,6 +26,24 @@ func TestRenderPromptIncludesSharedServerPreamble(t *testing.T) {
 	}
 }
 
+func TestBenchmarkPromptTemplateIncludesSharedAndTaskRequirements(t *testing.T) {
+	prompt, err := BenchmarkPromptTemplate(NewContentBasedRouter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"{{.Language}}", "{{.InitializeCommand}}", "{{index .Ports 0}}", "Implement the Content-Based Router", "{{.OrdersURL}}"} {
+		if !strings.Contains(prompt, expected) {
+			t.Errorf("prompt template does not contain %q", expected)
+		}
+	}
+}
+
+func TestBenchmarkPromptTemplateForRejectsUnknownTask(t *testing.T) {
+	if _, err := BenchmarkPromptTemplateFor("unknown"); err == nil {
+		t.Fatal("expected unknown task error")
+	}
+}
+
 func TestRenderPromptAssociatesEndpointsWithPorts(t *testing.T) {
 	prompt, err := RenderPrompt(PromptConfig{
 		Language:          "Go",

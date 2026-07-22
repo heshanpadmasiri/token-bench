@@ -27,7 +27,7 @@ func TestGenerateDiscoversNestedResultsAndExcludesFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := output.String()
-	for _, expected := range []string{"router", "go", "1 of 2 runs failed", "300.0", "100.0", "200.0", "50.0%", "mean ± 1σ"} {
+	for _, expected := range []string{"router", "go", "Benchmark prompt template", "test prompt template", "1 of 2 runs failed", "300.0", "100.0", "200.0", "50.0%", "mean ± 1σ"} {
 		if !strings.Contains(html, expected) {
 			t.Errorf("report does not contain %q", expected)
 		}
@@ -84,8 +84,51 @@ func TestGenerateRejectsMultipleHarnesses(t *testing.T) {
 	}
 }
 
+func TestGenerateUsesEmbeddedTemplateForLegacyResults(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "result.json")
+	value := result.Result{
+		SchemaVersion: result.SchemaVersion, Task: "content-based-router", Language: "go", Harness: "pi",
+		Run: 1, RequestedRuns: 1, Passed: true,
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := result.Write(path, value); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := Generate([]string{root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Benchmark prompt template", "Implement the Content-Based Router", "{{index .Ports 0}}"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("report does not contain %q", expected)
+		}
+	}
+}
+
+func TestGenerateRejectsDifferentPromptTemplatesForTask(t *testing.T) {
+	root := t.TempDir()
+	for index, promptTemplate := range []string{"first", "second"} {
+		writeTestResult(t, filepath.Join(root, string(rune('a'+index)), "result.json"), result.Result{
+			SchemaVersion: result.SchemaVersion, Task: "router", Language: "go", Harness: "pi",
+			PromptTemplate: promptTemplate, Run: 1, RequestedRuns: 1, Passed: true,
+		})
+	}
+	var output bytes.Buffer
+	err := Generate([]string{root}, &output)
+	if err == nil || !strings.Contains(err.Error(), "multiple benchmark prompt templates") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func writeTestResult(t *testing.T, path string, value result.Result) {
 	t.Helper()
+	if value.PromptTemplate == "" {
+		value.PromptTemplate = "test prompt template"
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}

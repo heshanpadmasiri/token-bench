@@ -54,6 +54,11 @@ type brokerQueueState struct {
 	Consumers              int    `json:"consumers"`
 }
 
+// PromptTemplate returns the unrendered task requirements.
+func PromptTemplate() string {
+	return promptTemplate
+}
+
 // New initializes the private Dead Letter Channel implementation.
 func New(ports []int) *deadLetterChannel {
 	handle := &deadLetterChannel{}

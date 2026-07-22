@@ -88,6 +88,11 @@ type checkResult struct {
 	feedback string
 }
 
+// PromptTemplate returns the unrendered task requirements.
+func PromptTemplate() string {
+	return promptTemplate
+}
+
 // New initializes the private Content Enricher implementation.
 func New(ports []int) *contentEnricher {
 	handle := &contentEnricher{}

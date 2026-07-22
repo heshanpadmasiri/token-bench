@@ -63,6 +63,11 @@ type checkResult struct {
 	feedback string
 }
 
+// PromptTemplate returns the unrendered task requirements.
+func PromptTemplate() string {
+	return promptTemplate
+}
+
 // New initializes the private Content-Based Router implementation.
 func New(ports []int) *contentBasedRouting {
 	handle := &contentBasedRouting{}

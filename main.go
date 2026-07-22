@@ -71,6 +71,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	promptTemplate, err := task.BenchmarkPromptTemplate(taskDefinition)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	languageImplementation, err := selectLanguage(configuration.language)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -100,13 +105,14 @@ func main() {
 			os.Exit(1)
 		}
 		current := runResult{
-			SchemaVersion: benchresult.SchemaVersion,
-			Task:          taskDefinition.Name,
-			Language:      configuration.language,
-			Harness:       configuration.harness,
-			SkillsDir:     configuration.skillsDir,
-			Run:           run,
-			RequestedRuns: configuration.runs,
+			SchemaVersion:  benchresult.SchemaVersion,
+			Task:           taskDefinition.Name,
+			Language:       configuration.language,
+			Harness:        configuration.harness,
+			SkillsDir:      configuration.skillsDir,
+			PromptTemplate: promptTemplate,
+			Run:            run,
+			RequestedRuns:  configuration.runs,
 		}
 		current = executeRun(current, directory, taskDefinition, languageImplementation, harnessConstructor)
 		result.Runs = append(result.Runs, current)
