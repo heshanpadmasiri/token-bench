@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"token-bench/harness/internal/shared"
+	"token-bench/tracing"
 )
 
 const (
@@ -53,6 +54,7 @@ type runningProcess struct {
 	streamPath  string
 	stderrPath  string
 	workingDir  string
+	trace       *traceAdapter
 }
 
 type asyncStatus struct {
@@ -106,7 +108,7 @@ func New(config Config) *claude {
 	return &claude{config: config}
 }
 
-func (c *claude) Start(workingDir string) error {
+func (c *claude) Start(workingDir string, benchmark tracing.BenchmarkSpan) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -127,7 +129,7 @@ func (c *claude) Start(workingDir string) error {
 		return err
 	}
 
-	running, err := c.startProcess(executable, workingDir)
+	running, err := c.startProcess(executable, workingDir, benchmark)
 	if err != nil {
 		_ = c.cleanupPlugin()
 		return err
@@ -138,7 +140,7 @@ func (c *claude) Start(workingDir string) error {
 	return nil
 }
 
-func (c *claude) startProcess(executable, workingDir string) (*runningProcess, error) {
+func (c *claude) startProcess(executable, workingDir string, benchmark tracing.BenchmarkSpan) (*runningProcess, error) {
 	streamFile, err := os.CreateTemp("", "token-bench-claude-stream-*.jsonl")
 	if err != nil {
 		return nil, fmt.Errorf("create Claude stream log: %w", err)
@@ -180,6 +182,7 @@ func (c *claude) startProcess(executable, workingDir string) (*runningProcess, e
 		streamPath:  streamFile.Name(),
 		stderrPath:  stderrFile.Name(),
 		workingDir:  workingDir,
+		trace:       newTraceAdapter(benchmark),
 	}
 	go func() {
 		// StdoutPipe must be drained before Wait so the final result and log tail
@@ -205,6 +208,7 @@ func (c *claude) cleanupUnstartedProcess(streamFile, stderrFile *os.File, workin
 func readStream(reader io.Reader, running *runningProcess) {
 	var readErr error
 	defer func() {
+		running.trace.Close()
 		running.readerDone.complete(readErr)
 		close(running.results)
 	}()
@@ -225,6 +229,10 @@ func readStream(reader io.Reader, running *runningProcess) {
 		}
 		if err := json.Unmarshal(raw, &envelope); err != nil {
 			readErr = fmt.Errorf("decode Claude stream envelope: %w", err)
+			return
+		}
+		if err := running.trace.Process(envelope.Type, raw); err != nil {
+			readErr = fmt.Errorf("trace Claude stream event: %w", err)
 			return
 		}
 		if envelope.Type != "result" {
@@ -343,6 +351,7 @@ func (c *claude) SendMessage(message string) (string, error) {
 	}{Type: "user"}
 	record.Message.Role = "user"
 	record.Message.Content = message
+	c.process.trace.SetNextInput(message)
 	if err := json.NewEncoder(c.process.stdin).Encode(record); err != nil {
 		return "", fmt.Errorf("send Claude prompt: %w", err)
 	}

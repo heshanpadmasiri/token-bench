@@ -6,7 +6,18 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"token-bench/tracing"
 )
+
+func TestStartPanicsWhenTracingIsProvided(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != "tracing is not supported by the Pi harness" {
+			t.Fatalf("unexpected panic: %v", recovered)
+		}
+	}()
+	_ = New(Config{}).Start(t.TempDir(), unsupportedBenchmark{})
+}
 
 func TestStartArgumentsUseRPCModeAndOnlyConfiguredSkills(t *testing.T) {
 	agent := New(Config{SkillsDir: "/tmp/skills with 'quote"})
@@ -65,7 +76,7 @@ printf '%s\n' 'fake Pi closed' >&2
 
 	workingDir := t.TempDir()
 	agent := New(Config{})
-	if err := agent.Start(workingDir); err != nil {
+	if err := agent.Start(workingDir, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{streamArtifactName, stderrArtifactName} {
@@ -129,7 +140,7 @@ func TestStartReportsPrematureProcessExitAndPersistsLogs(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	workingDir := t.TempDir()
-	err := New(Config{}).Start(workingDir)
+	err := New(Config{}).Start(workingDir, nil)
 	if err == nil || !strings.Contains(err.Error(), "Pi startup failed") {
 		t.Fatalf("unexpected startup error: %v", err)
 	}
@@ -139,6 +150,13 @@ func TestStartReportsPrematureProcessExitAndPersistsLogs(t *testing.T) {
 		}
 	}
 }
+
+type unsupportedBenchmark struct{}
+
+func (unsupportedBenchmark) StartTurn() tracing.TurnSpan { return nil }
+func (unsupportedBenchmark) SetOK()                      {}
+func (unsupportedBenchmark) SetError(string)             {}
+func (unsupportedBenchmark) End()                        {}
 
 func containsArgument(arguments []string, expected string) bool {
 	for _, argument := range arguments {

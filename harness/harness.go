@@ -5,6 +5,7 @@ import (
 	"token-bench/harness/internal/claude"
 	"token-bench/harness/internal/pi"
 	"token-bench/harness/internal/shared"
+	"token-bench/tracing"
 )
 
 type (
@@ -14,7 +15,8 @@ type (
 	}
 
 	Harness interface {
-		Start(workingDir string) error
+		// Start launches the harness. benchmark may be nil when tracing is disabled.
+		Start(workingDir string, benchmark tracing.BenchmarkSpan) error
 		// Send a message to the given harness. Message could be either the starting prompt or feedback
 		SendMessage(message string) (string, error)
 		TokenCount() (TokenCount, error)

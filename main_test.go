@@ -20,6 +20,24 @@ func TestParseOptions(t *testing.T) {
 	}
 }
 
+func TestParsePhoenixEndpoint(t *testing.T) {
+	parsed, err := parseOptions([]string{"claim-check", "go", "claude", "--phoenix-endpoint", "http://localhost:6006"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.phoenixEndpoint != "http://localhost:6006" {
+		t.Fatalf("unexpected Phoenix endpoint: %q", parsed.phoenixEndpoint)
+	}
+	for _, arguments := range [][]string{
+		{"claim-check", "go", "claude", "--phoenix-endpoint="},
+		{"claim-check", "go", "claude", "--phoenix-endpoint", "http://localhost:6006", "--phoenix-endpoint=http://localhost:6007"},
+	} {
+		if _, err := parseOptions(arguments); err == nil {
+			t.Errorf("parseOptions(%q) unexpectedly succeeded", arguments)
+		}
+	}
+}
+
 func TestNormalizeSkillsDir(t *testing.T) {
 	directory := t.TempDir()
 	normalized, err := normalizeSkillsDir(directory)

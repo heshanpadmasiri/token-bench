@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,7 +64,7 @@ func New(config Config) (shared.Tracer, error) {
 }
 
 func newTracer(config Config, exporter sdktrace.SpanExporter, synchronous bool) *tracer {
-	recording := &recordingExporter{delegate: exporter}
+	recording := &recordingExporter{delegate: exporter, deferred: !synchronous}
 	res := resource.NewWithAttributes(
 		semconv.SchemaURL,
 		semconv.ServiceName(config.ProjectName),
@@ -152,11 +153,37 @@ func cloneHeaders(headers map[string]string) map[string]string {
 
 type recordingExporter struct {
 	delegate sdktrace.SpanExporter
+	deferred bool
 	mu       sync.Mutex
+	pending  []sdktrace.ReadOnlySpan
 	failures []error
 }
 
 func (e *recordingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	if e.deferred {
+		e.mu.Lock()
+		e.pending = append(e.pending, spans...)
+		e.mu.Unlock()
+		return nil
+	}
+	return e.export(ctx, spans)
+}
+
+func (e *recordingExporter) Shutdown(ctx context.Context) error {
+	e.mu.Lock()
+	pending := append([]sdktrace.ReadOnlySpan(nil), e.pending...)
+	e.pending = nil
+	e.mu.Unlock()
+
+	var exportErr error
+	if len(pending) != 0 {
+		sortParentFirst(pending)
+		exportErr = e.export(ctx, pending)
+	}
+	return errors.Join(exportErr, e.delegate.Shutdown(ctx))
+}
+
+func (e *recordingExporter) export(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	err := e.delegate.ExportSpans(ctx, spans)
 	if err != nil {
 		e.mu.Lock()
@@ -166,8 +193,34 @@ func (e *recordingExporter) ExportSpans(ctx context.Context, spans []sdktrace.Re
 	return err
 }
 
-func (e *recordingExporter) Shutdown(ctx context.Context) error {
-	return e.delegate.Shutdown(ctx)
+func sortParentFirst(spans []sdktrace.ReadOnlySpan) {
+	byID := make(map[oteltrace.SpanID]sdktrace.ReadOnlySpan, len(spans))
+	for _, current := range spans {
+		byID[current.SpanContext().SpanID()] = current
+	}
+	depths := make(map[oteltrace.SpanID]int, len(spans))
+	var depth func(sdktrace.ReadOnlySpan) int
+	depth = func(current sdktrace.ReadOnlySpan) int {
+		id := current.SpanContext().SpanID()
+		if value, ok := depths[id]; ok {
+			return value
+		}
+		parent, ok := byID[current.Parent().SpanID()]
+		if !ok {
+			depths[id] = 0
+			return 0
+		}
+		value := depth(parent) + 1
+		depths[id] = value
+		return value
+	}
+	sort.SliceStable(spans, func(left, right int) bool {
+		leftDepth, rightDepth := depth(spans[left]), depth(spans[right])
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return spans[left].StartTime().Before(spans[right].StartTime())
+	})
 }
 
 func (e *recordingExporter) exportError() error {

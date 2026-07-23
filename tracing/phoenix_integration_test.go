@@ -91,6 +91,9 @@ func TestPhoenixExportIntegration(t *testing.T) {
 	byName := make(map[string][]phoenixSpan, len(trace.Spans))
 	for _, span := range trace.Spans {
 		byName[span.Name] = append(byName[span.Name], span)
+		if span.StatusCode != "OK" {
+			t.Errorf("span %q status is %q, want OK", span.Name, span.StatusCode)
+		}
 	}
 	if len(trace.Spans) != 8 || len(byName["benchmark"]) != 1 || len(byName["llm"]) != 2 {
 		t.Fatalf("Phoenix trace did not contain one benchmark and two LLM turns: %+v", trace.Spans)
@@ -200,10 +203,11 @@ type phoenixTrace struct {
 }
 
 type phoenixSpan struct {
-	SpanID   string  `json:"span_id"`
-	ParentID *string `json:"parent_id"`
-	Name     string  `json:"name"`
-	SpanKind string  `json:"span_kind"`
+	SpanID     string  `json:"span_id"`
+	ParentID   *string `json:"parent_id"`
+	Name       string  `json:"name"`
+	SpanKind   string  `json:"span_kind"`
+	StatusCode string  `json:"status_code"`
 }
 
 func spanParentID(span phoenixSpan) string {

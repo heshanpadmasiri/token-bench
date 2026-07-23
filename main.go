@@ -16,10 +16,11 @@ import (
 	"token-bench/language"
 	benchresult "token-bench/result"
 	"token-bench/task"
+	"token-bench/tracing"
 )
 
 // TODO: add optional harness flags (system prompt, model, thinking)
-const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--target=DIR] [--skills=DIR]
+const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--target=DIR] [--skills=DIR] [--phoenix-endpoint=URL]
 
 Implementations:
   task:      claim-check, content-based-router, content-enricher, dead-letter-channel, scatter-gather
@@ -28,15 +29,17 @@ Implementations:
 
 Notes:
   claude loads --skills as a temporary plugin; global Claude configuration may still be discovered.
+  --phoenix-endpoint enables tracing to a locally hosted Arize Phoenix OTLP/HTTP endpoint.
 `
 
 type options struct {
-	task      string
-	language  string
-	harness   string
-	runs      int
-	target    string
-	skillsDir string
+	task            string
+	language        string
+	harness         string
+	runs            int
+	target          string
+	skillsDir       string
+	phoenixEndpoint string
 }
 
 type runResult = benchresult.Result
@@ -60,49 +63,71 @@ type report struct {
 }
 
 func main() {
-	configuration, err := parseOptions(os.Args[1:])
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(arguments []string) (exitCode int) {
+	var traceProvider tracing.Tracer
+	defer func() {
+		if traceProvider == nil {
+			return
+		}
+		if err := traceProvider.Shutdown(); err != nil {
+			fmt.Fprintln(os.Stderr, fmt.Errorf("shutdown tracing: %w", err))
+			exitCode = 1
+		}
+	}()
+
+	configuration, err := parseOptions(arguments)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		return 2
 	}
 	taskDefinition, err := selectTask(configuration.task)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return 2
 	}
 	promptTemplate, err := task.BenchmarkPromptTemplate(taskDefinition)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 	languageImplementation, err := selectLanguage(configuration.language)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return 2
 	}
 	configuration.skillsDir, err = normalizeSkillsDir(configuration.skillsDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return 2
 	}
 	harnessConstructor, err := selectHarness(configuration.harness, harness.Config{SkillsDir: configuration.skillsDir})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return 2
+	}
+	if configuration.phoenixEndpoint != "" {
+		traceProvider, err = tracing.NewPhoenix(tracing.PhoenixConfig{Endpoint: configuration.phoenixEndpoint})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, fmt.Errorf("initialize tracing: %w", err))
+			return 1
+		}
 	}
 
 	target, err := prepareTarget(configuration.target)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 	result := report{Task: taskDefinition.Name, Language: configuration.language, Harness: configuration.harness, SkillsDir: configuration.skillsDir}
 	for run := 1; run <= configuration.runs; run++ {
 		directory, err := createRunDirectory(target, configuration.language, taskDefinition.Name, configuration.harness)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return 1
 		}
 		current := runResult{
 			SchemaVersion:  benchresult.SchemaVersion,
@@ -114,27 +139,44 @@ func main() {
 			Run:            run,
 			RequestedRuns:  configuration.runs,
 		}
-		current = executeRun(current, directory, taskDefinition, languageImplementation, harnessConstructor)
+		current = executeRun(current, directory, taskDefinition, languageImplementation, harnessConstructor, traceProvider)
 		result.Runs = append(result.Runs, current)
 		if err := benchresult.Write(filepath.Join(directory, "result.json"), current); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return 1
 		}
 	}
 	result.Mean, result.Median = summarize(result.Runs)
 	if err := printReport(result, target); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 	for _, current := range result.Runs {
 		if !current.Passed {
-			os.Exit(1)
+			return 1
 		}
 	}
+	return 0
 }
 
-func executeRun(current runResult, directory string, definition task.Task, implementation language.Language, newHarness func() harness.Harness) (result runResult) {
+func executeRun(current runResult, directory string, definition task.Task, implementation language.Language, newHarness func() harness.Harness, traceProvider tracing.Tracer) (result runResult) {
 	result = current
+	var benchmark tracing.BenchmarkSpan
+	if traceProvider != nil {
+		benchmark = traceProvider.StartBenchmarkSpan(definition.Name, current.Harness, current.SkillsDir)
+		defer func() {
+			if result.Passed && result.Error == "" {
+				benchmark.SetOK()
+			} else {
+				description := result.Error
+				if description == "" {
+					description = "benchmark validation failed"
+				}
+				benchmark.SetError(description)
+			}
+			benchmark.End()
+		}()
+	}
 	ports, err := allocatePorts(definition.Resources.NPorts)
 	if err != nil {
 		result.Error = err.Error()
@@ -159,7 +201,7 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 		return result
 	}
 	agent := newHarness()
-	if err := agent.Start(directory); err != nil {
+	if err := agent.Start(directory, benchmark); err != nil {
 		result.Error = err.Error()
 		return result
 	}
@@ -321,6 +363,23 @@ func parseOptions(arguments []string) (options, error) {
 				return options{}, errors.New("--skills requires a value")
 			}
 			parsed.skillsDir = arguments[index]
+		case strings.HasPrefix(argument, "--phoenix-endpoint="):
+			if parsed.phoenixEndpoint != "" {
+				return options{}, errors.New("--phoenix-endpoint may only be specified once")
+			}
+			parsed.phoenixEndpoint = strings.TrimPrefix(argument, "--phoenix-endpoint=")
+			if parsed.phoenixEndpoint == "" {
+				return options{}, errors.New("--phoenix-endpoint requires a value")
+			}
+		case argument == "--phoenix-endpoint":
+			if parsed.phoenixEndpoint != "" {
+				return options{}, errors.New("--phoenix-endpoint may only be specified once")
+			}
+			index++
+			if index == len(arguments) || arguments[index] == "" {
+				return options{}, errors.New("--phoenix-endpoint requires a value")
+			}
+			parsed.phoenixEndpoint = arguments[index]
 		case strings.HasPrefix(argument, "--target="):
 			parsed.target = strings.TrimPrefix(argument, "--target=")
 		case argument == "--target":

@@ -15,6 +15,7 @@ const (
 	outputValue           = "output.value"
 	outputMIMEType        = "output.mime_type"
 	toolName              = "tool.name"
+	toolFilePath          = "tool.file_path"
 	textMIMEType          = "text/plain"
 	jsonMIMEType          = "application/json"
 )

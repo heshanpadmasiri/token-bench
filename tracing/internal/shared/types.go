@@ -11,6 +11,10 @@ type (
 
 	// Span is a unit of traced work.
 	Span interface {
+		// SetOK marks the span successful.
+		SetOK()
+		// SetError marks the span failed and records a description.
+		SetError(description string)
 		End()
 	}
 

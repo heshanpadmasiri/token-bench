@@ -49,7 +49,7 @@ printf '%s\n' 'fake Claude closed' >&2
 
 	workingDir := t.TempDir()
 	agent := New(Config{})
-	if err := agent.Start(workingDir); err != nil {
+	if err := agent.Start(workingDir, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{streamArtifactName, stderrArtifactName} {

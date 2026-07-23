@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"token-bench/harness/internal/shared"
+	"token-bench/tracing"
 )
 
 const (
@@ -84,7 +85,10 @@ func New(config Config) *pi {
 	return &pi{config: config}
 }
 
-func (p *pi) Start(workingDir string) error {
+func (p *pi) Start(workingDir string, benchmark tracing.BenchmarkSpan) error {
+	if benchmark != nil {
+		panic("tracing is not supported by the Pi harness")
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

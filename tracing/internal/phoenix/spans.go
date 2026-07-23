@@ -2,21 +2,53 @@ package phoenix
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"token-bench/tracing/internal/shared"
 )
 
 type span struct {
-	span oteltrace.Span
-	once sync.Once
+	span      oteltrace.Span
+	once      sync.Once
+	mu        sync.Mutex
+	statusSet bool
+}
+
+func (s *span) SetOK() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.statusSet {
+		return
+	}
+	s.span.SetStatus(codes.Ok, "")
+	s.statusSet = true
+}
+
+func (s *span) SetError(description string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.statusSet {
+		return
+	}
+	s.span.SetStatus(codes.Error, description)
+	if description != "" {
+		s.span.RecordError(errors.New(description))
+	}
+	s.statusSet = true
 }
 
 func (s *span) End() {
-	s.once.Do(func() { s.span.End() })
+	s.once.Do(func() {
+		s.SetOK()
+		s.span.End()
+	})
 }
 
 type benchmarkSpan struct {
@@ -105,18 +137,12 @@ type editToolSpan struct {
 }
 
 func (e *editToolSpan) SetInput(path string, edits []shared.Edit) {
-	type serializedEdit struct {
-		OldText string `json:"old_text"`
-		NewText string `json:"new_text"`
-	}
-	serialized := make([]serializedEdit, len(edits))
+	formatted := make([]string, len(edits))
 	for index, edit := range edits {
-		serialized[index] = serializedEdit{OldText: edit.OldText, NewText: edit.NewText}
+		formatted[index] = fmt.Sprintf("old_text:\n%s\n\nnew_text:\n%s", edit.OldText, edit.NewText)
 	}
-	setJSONInput(e.span.span, struct {
-		Path  string           `json:"path"`
-		Edits []serializedEdit `json:"edits"`
-	}{Path: path, Edits: serialized})
+	e.span.span.SetAttributes(attribute.String(toolFilePath, path))
+	setTextInput(e.span.span, strings.Join(formatted, "\n\n---\n\n"))
 }
 
 type writeToolSpan struct {
@@ -124,10 +150,8 @@ type writeToolSpan struct {
 }
 
 func (w *writeToolSpan) SetInput(path, content string) {
-	setJSONInput(w.span.span, struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	}{Path: path, Content: content})
+	w.span.span.SetAttributes(attribute.String(toolFilePath, path))
+	setTextInput(w.span.span, content)
 }
 
 type readToolSpan struct {

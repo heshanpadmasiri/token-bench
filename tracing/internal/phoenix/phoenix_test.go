@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -77,7 +78,7 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 	edit.End()
 
 	write := turn.StartWriteToolSpan()
-	write.SetInput("go.mod", "module example")
+	write.SetInput("go.mod", "module example\n\ngo 1.25\n")
 	write.End()
 
 	read := turn.StartReadToolSpan()
@@ -101,6 +102,11 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 	}
 	if llm.Parent.SpanID() != root.SpanContext.SpanID() {
 		t.Fatalf("LLM parent is not benchmark: root=%s parent=%s", root.SpanContext.SpanID(), llm.Parent.SpanID())
+	}
+	for _, current := range spans {
+		if current.Status.Code != codes.Ok {
+			t.Errorf("span %q status is %s, want OK", current.Name, current.Status.Code)
+		}
 	}
 	for _, name := range []string{"search", "bash", "edit", "write", "read"} {
 		current, ok := byName[name]
@@ -134,11 +140,14 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 		outputValue:           "ok",
 	})
 	assertAttributes(t, byName["edit"].Attributes, map[string]string{
-		inputValue:    `{"path":"main.go","edits":[{"old_text":"old","new_text":"new"}]}`,
-		inputMIMEType: jsonMIMEType,
+		toolFilePath:  "main.go",
+		inputValue:    "old_text:\nold\n\nnew_text:\nnew",
+		inputMIMEType: textMIMEType,
 	})
 	assertAttributes(t, byName["write"].Attributes, map[string]string{
-		inputValue: `{"path":"go.mod","content":"module example"}`,
+		toolFilePath:  "go.mod",
+		inputValue:    "module example\n\ngo 1.25\n",
+		inputMIMEType: textMIMEType,
 	})
 	assertAttributes(t, byName["read"].Attributes, map[string]string{
 		inputValue: `{"path":"main.go","offset":2,"limit":20}`,
@@ -153,6 +162,57 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 	}
 	if err := tracer.Shutdown(); err != nil {
 		t.Fatalf("second shutdown failed: %v", err)
+	}
+}
+
+func TestProductionExporterFlushesCompleteHierarchyParentFirst(t *testing.T) {
+	exporter := &retainingExporter{}
+	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: time.Second}, exporter, false)
+
+	benchmark := tracer.StartBenchmarkSpan("task", "claude", "")
+	turn := benchmark.StartTurn()
+	tool := turn.StartBashToolSpan()
+	tool.SetInput("go test ./...")
+	tool.End()
+	turn.End()
+	benchmark.End()
+
+	if spans := exporter.spans; len(spans) != 0 {
+		t.Fatalf("exported %d spans before shutdown", len(spans))
+	}
+	if err := tracer.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	spans := exporter.spans
+	if len(spans) != 3 {
+		t.Fatalf("got %d spans, want 3", len(spans))
+	}
+	for index, name := range []string{"benchmark", "llm", "bash"} {
+		if spans[index].Name != name {
+			t.Fatalf("span %d is %q, want %q", index, spans[index].Name, name)
+		}
+		if spans[index].Status.Code != codes.Ok {
+			t.Errorf("span %q status is %s, want OK", name, spans[index].Status.Code)
+		}
+	}
+	if spans[1].Parent.SpanID() != spans[0].SpanContext.SpanID() || spans[2].Parent.SpanID() != spans[1].SpanContext.SpanID() {
+		t.Fatalf("spans are not nested parent-first: %+v", spans)
+	}
+}
+
+func TestSpanErrorStatusIsExported(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: time.Second}, exporter, true)
+	benchmark := tracer.StartBenchmarkSpan("task", "claude", "")
+	benchmark.SetError("validation failed")
+	benchmark.End()
+
+	span := exporter.GetSpans()[0]
+	if span.Status.Code != codes.Error || span.Status.Description != "validation failed" {
+		t.Fatalf("unexpected status: %+v", span.Status)
+	}
+	if len(span.Events) != 1 || span.Events[0].Name != "exception" {
+		t.Fatalf("error event was not recorded: %+v", span.Events)
 	}
 }
 
@@ -183,6 +243,17 @@ func attributeMap(attributes []attribute.KeyValue) map[string]string {
 	}
 	return result
 }
+
+type retainingExporter struct {
+	spans tracetest.SpanStubs
+}
+
+func (e *retainingExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
+	e.spans = append(e.spans, tracetest.SpanStubsFromReadOnlySpans(spans)...)
+	return nil
+}
+
+func (*retainingExporter) Shutdown(context.Context) error { return nil }
 
 type failingExporter struct {
 	err error
