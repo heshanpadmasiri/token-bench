@@ -18,7 +18,7 @@ func TestPromptIncludesBackendsSchemaAndSamples(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"127.0.0.1:19081", "127.0.0.1:19082", `"$schema"`, `"messageType": "order"`, `"backend": "invoices"`} {
+	for _, expected := range []string{"127.0.0.1:19081", "127.0.0.1:19082", `"$schema"`, `"messageType": "order"`, `"backend": "invoices"`, "Never stop, kill"} {
 		if !strings.Contains(prompt, expected) {
 			t.Errorf("prompt does not contain %q", expected)
 		}
