@@ -1,57 +1,105 @@
 package claude
 
 import (
-	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestStartCommandUsesInteractiveClaude(t *testing.T) {
+func TestStartArgumentsUseStreamingPrintMode(t *testing.T) {
 	agent := New(Config{})
-	agent.settingsPath = "/tmp/settings with 'quote.json"
 	agent.pluginPath = "/tmp/plugin with spaces"
-	command := agent.startCommand()
 
-	for _, expected := range []string{
-		"claude --model 'opus'",
-		"--effort 'high'",
+	expected := []string{
+		"--model", "opus",
+		"--effort", "high",
 		"--dangerously-skip-permissions",
-		"--setting-sources ''",
-		"--settings '/tmp/settings with '\\''quote.json'",
-		"--plugin-dir '/tmp/plugin with spaces'",
-	} {
-		if !strings.Contains(command, expected) {
-			t.Errorf("command does not contain %q: %s", expected, command)
-		}
+		"--setting-sources", "",
+		"-p",
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--plugin-dir", "/tmp/plugin with spaces",
 	}
-	if strings.Contains(command, " -p") || strings.Contains(command, "--print") {
-		t.Fatalf("command unexpectedly uses print mode: %s", command)
+	if actual := agent.startArguments(); !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("unexpected Claude arguments:\nwant: %#v\n got: %#v", expected, actual)
 	}
 }
 
-func TestParseTranscriptDeduplicatesStreamingRecords(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "transcript.jsonl")
-	transcript := strings.Join([]string{
-		`{"type":"user","message":{"role":"user","content":"hello"}}`,
-		`{"type":"assistant","uuid":"first-a","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"Working"}],"usage":{"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":5,"cache_creation_input_tokens":7}}}`,
-		`{"type":"assistant","uuid":"first-b","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"Working"},{"type":"tool_use","id":"tool-1"}],"usage":{"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":5,"cache_creation_input_tokens":7}}}`,
-		`{"type":"assistant","uuid":"second","message":{"id":"msg-2","role":"assistant","content":[{"type":"text","text":"Done"}],"usage":{"input_tokens":11,"output_tokens":13,"cache_read_input_tokens":17,"cache_creation_input_tokens":19}}}`,
-	}, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(transcript), 0o600); err != nil {
+func TestStreamingProcessSupportsMultipleMessagesAndPersistsLogs(t *testing.T) {
+	binDir := t.TempDir()
+	claudePath := filepath.Join(binDir, "claude")
+	script := `#!/bin/sh
+turn=0
+while IFS= read -r message; do
+  turn=$((turn + 1))
+  if [ "$turn" -eq 1 ]; then
+    printf '%s\n' '{"type":"system","subtype":"init"}'
+  fi
+  printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"reply-$turn\",\"modelUsage\":{\"main\":{\"inputTokens\":3,\"outputTokens\":5,\"cacheReadInputTokens\":7,\"cacheCreationInputTokens\":11},\"subagent\":{\"inputTokens\":13,\"outputTokens\":17,\"cacheReadInputTokens\":19,\"cacheCreationInputTokens\":23}}}"
+done
+printf '%s\n' 'fake Claude closed' >&2
+`
+	if err := os.WriteFile(claudePath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	reply, tokens, err := parseTranscript(path)
+	workingDir := t.TempDir()
+	agent := New(Config{})
+	if err := agent.Start(workingDir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{streamArtifactName, stderrArtifactName} {
+		if _, err := os.Stat(filepath.Join(workingDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("artifact %q became visible before Claude exited: %v", name, err)
+		}
+	}
+
+	for index, message := range []string{"initial prompt", "correction"} {
+		reply, err := agent.SendMessage(message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected := "reply-" + string(rune('1'+index))
+		if reply != expected {
+			t.Fatalf("unexpected reply %q, want %q", reply, expected)
+		}
+	}
+	usage, err := agent.TokenCount()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reply != "Done" {
-		t.Fatalf("unexpected reply %q", reply)
+	if usage.Input != 32 || usage.Output != 44 || usage.CacheRead != 52 || usage.CacheWrite != 68 || usage.Total != 196 {
+		t.Fatalf("unexpected subagent-inclusive usage: %+v", usage)
 	}
-	if tokens.Input != 14 || tokens.Output != 15 || tokens.CacheRead != 22 || tokens.CacheWrite != 26 || tokens.Total != 77 {
-		t.Fatalf("unexpected tokens: %+v", tokens)
+	if err := agent.End(); err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := os.ReadFile(filepath.Join(workingDir, streamArtifactName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(stream), `"type":"result"`) != 2 || !strings.Contains(string(stream), `"subagent"`) {
+		t.Fatalf("unexpected persisted stream: %s", stream)
+	}
+	stderr, err := os.ReadFile(filepath.Join(workingDir, stderrArtifactName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stderr), "fake Claude closed") {
+		t.Fatalf("unexpected persisted stderr: %s", stderr)
+	}
+}
+
+func TestResultUsageFallsBackWhenModelUsageIsUnavailable(t *testing.T) {
+	agent := New(Config{})
+	agent.addUsage(resultEvent{Usage: resultUsage{Input: 2, Output: 3, CacheRead: 5, CacheWrite: 7}})
+	if agent.tokens != (TokenCount{Input: 2, Output: 3, CacheRead: 5, CacheWrite: 7, Total: 17}) {
+		t.Fatalf("unexpected fallback usage: %+v", agent.tokens)
 	}
 }
 
@@ -71,7 +119,7 @@ func TestCreateSkillsPluginSupportsSkillCollections(t *testing.T) {
 	if err := agent.createSkillsPlugin(); err != nil {
 		t.Fatal(err)
 	}
-	defer agent.cleanupFiles()
+	defer agent.cleanupPlugin()
 	for _, name := range []string{"review", "testing"} {
 		path := filepath.Join(agent.pluginPath, "skills", name)
 		if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
@@ -92,53 +140,12 @@ func TestCreateSkillsPluginSupportsSingleSkillDirectory(t *testing.T) {
 	if err := agent.createSkillsPlugin(); err != nil {
 		t.Fatal(err)
 	}
-	defer agent.cleanupFiles()
+	defer agent.cleanupPlugin()
 	entries, err := os.ReadDir(filepath.Join(agent.pluginPath, "skills"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected one staged skill, got %d", len(entries))
-	}
-}
-
-func TestWaitForStopSkipsBlankLinesBetweenEvents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "events.jsonl")
-	events := strings.Join([]string{
-		`{"hook_event_name":"Stop","transcript_path":"first.jsonl"}`,
-		"",
-		`{"hook_event_name":"Stop","transcript_path":"second.jsonl"}`,
-		"",
-	}, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(events), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	agent := New(Config{})
-	agent.eventsPath = path
-	for _, expected := range []string{"first.jsonl", "second.jsonl"} {
-		event, err := agent.waitForStop(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if event.TranscriptPath != expected {
-			t.Fatalf("expected transcript %q, got %q", expected, event.TranscriptPath)
-		}
-	}
-}
-
-func TestCreateHookFilesConfiguresStopHook(t *testing.T) {
-	agent := New(Config{})
-	if err := agent.createHookFiles(); err != nil {
-		t.Fatal(err)
-	}
-	defer agent.cleanupFiles()
-
-	settings, err := os.ReadFile(agent.settingsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(settings), `"Stop"`) || !strings.Contains(string(settings), agent.eventsPath) {
-		t.Fatalf("settings do not configure Stop hook: %s", settings)
 	}
 }

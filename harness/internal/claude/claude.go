@@ -1,9 +1,7 @@
-// Package claude implements the interactive Claude Code harness.
+// Package claude implements the Claude Code streaming harness.
 package claude
 
 import (
-	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,8 +17,10 @@ import (
 )
 
 const (
-	model  = "opus"
-	effort = "high"
+	model              = "opus"
+	effort             = "high"
+	streamArtifactName = "claude-stream.jsonl"
+	stderrArtifactName = "claude-stderr.log"
 )
 
 // Config contains Claude Code startup configuration.
@@ -32,16 +32,73 @@ type Config struct {
 type TokenCount = shared.TokenCount
 
 type claude struct {
-	config         Config
-	mu             sync.Mutex
-	paneID         string
-	settingsPath   string
-	eventsPath     string
-	pluginPath     string
-	eventOffset    int64
-	transcriptPath string
-	tokens         TokenCount
-	lastReply      string
+	config     Config
+	mu         sync.Mutex
+	process    *runningProcess
+	pluginPath string
+	tokens     TokenCount
+	lastReply  string
+}
+
+type runningProcess struct {
+	command     *exec.Cmd
+	stdin       io.WriteCloser
+	results     chan resultEvent
+	stopping    chan struct{}
+	stopOnce    sync.Once
+	processDone *asyncStatus
+	readerDone  *asyncStatus
+	streamFile  *os.File
+	stderrFile  *os.File
+	streamPath  string
+	stderrPath  string
+	workingDir  string
+}
+
+type asyncStatus struct {
+	done chan struct{}
+	err  error
+}
+
+func newAsyncStatus() *asyncStatus {
+	return &asyncStatus{done: make(chan struct{})}
+}
+
+func (s *asyncStatus) complete(err error) {
+	s.err = err
+	close(s.done)
+}
+
+func (s *asyncStatus) result() error {
+	<-s.done
+	return s.err
+}
+
+type resultEvent struct {
+	Type       string                `json:"type"`
+	Subtype    string                `json:"subtype"`
+	Result     string                `json:"result"`
+	IsError    bool                  `json:"is_error"`
+	Errors     []string              `json:"errors"`
+	Usage      resultUsage           `json:"usage"`
+	ModelUsage map[string]modelUsage `json:"modelUsage"`
+	Origin     struct {
+		Kind string `json:"kind"`
+	} `json:"origin"`
+}
+
+type resultUsage struct {
+	Input      int `json:"input_tokens"`
+	Output     int `json:"output_tokens"`
+	CacheRead  int `json:"cache_read_input_tokens"`
+	CacheWrite int `json:"cache_creation_input_tokens"`
+}
+
+type modelUsage struct {
+	Input      int `json:"inputTokens"`
+	Output     int `json:"outputTokens"`
+	CacheRead  int `json:"cacheReadInputTokens"`
+	CacheWrite int `json:"cacheCreationInputTokens"`
 }
 
 // New initializes the private Claude Code implementation.
@@ -53,13 +110,11 @@ func (c *claude) Start(workingDir string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.paneID != "" {
+	if c.process != nil {
 		return errors.New("Claude is already started")
 	}
-	if _, err := exec.LookPath("tmux"); err != nil {
-		return fmt.Errorf("find tmux: %w", err)
-	}
-	if _, err := exec.LookPath("claude"); err != nil {
+	executable, err := exec.LookPath("claude")
+	if err != nil {
 		return fmt.Errorf("find claude: %w", err)
 	}
 	if info, err := os.Stat(workingDir); err != nil {
@@ -68,35 +123,123 @@ func (c *claude) Start(workingDir string) error {
 		return fmt.Errorf("working directory %q is not a directory", workingDir)
 	}
 	if err := c.createSkillsPlugin(); err != nil {
-		_ = c.cleanupFiles()
-		return err
-	}
-	if err := c.createHookFiles(); err != nil {
-		_ = c.cleanupFiles()
+		_ = c.cleanupPlugin()
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	pane, err := command(ctx, "tmux", "split-window", "-P", "-F", "#{pane_id}", "-c", workingDir)
+	running, err := c.startProcess(executable, workingDir)
 	if err != nil {
-		_ = c.cleanupFiles()
-		return fmt.Errorf("create tmux pane: %w", err)
+		_ = c.cleanupPlugin()
+		return err
 	}
-	c.paneID = strings.TrimSpace(pane)
-	if c.paneID == "" {
-		_ = c.cleanupFiles()
-		return errors.New("tmux returned an empty pane id")
-	}
-	if err := sendShellCommand(ctx, c.paneID, c.startCommand()); err != nil {
-		_ = c.endLocked()
-		return fmt.Errorf("start Claude: %w", err)
-	}
-	if err := c.waitUntilReady(ctx); err != nil {
-		_ = c.endLocked()
-		return fmt.Errorf("wait for Claude startup: %w", err)
-	}
+	c.process = running
+	c.tokens = TokenCount{}
+	c.lastReply = ""
 	return nil
+}
+
+func (c *claude) startProcess(executable, workingDir string) (*runningProcess, error) {
+	streamFile, err := os.CreateTemp("", "token-bench-claude-stream-*.jsonl")
+	if err != nil {
+		return nil, fmt.Errorf("create Claude stream log: %w", err)
+	}
+	stderrFile, err := os.CreateTemp("", "token-bench-claude-stderr-*.log")
+	if err != nil {
+		_ = streamFile.Close()
+		_ = os.Remove(streamFile.Name())
+		return nil, fmt.Errorf("create Claude stderr log: %w", err)
+	}
+
+	command := exec.Command(executable, c.startArguments()...)
+	command.Dir = workingDir
+	command.Stderr = stderrFile
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		return nil, c.cleanupUnstartedProcess(streamFile, stderrFile, workingDir, fmt.Errorf("open Claude stdin: %w", err))
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, c.cleanupUnstartedProcess(streamFile, stderrFile, workingDir, fmt.Errorf("open Claude stdout: %w", err))
+	}
+	if err := command.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, c.cleanupUnstartedProcess(streamFile, stderrFile, workingDir, fmt.Errorf("start Claude: %w", err))
+	}
+
+	running := &runningProcess{
+		command:     command,
+		stdin:       stdin,
+		results:     make(chan resultEvent, 64),
+		stopping:    make(chan struct{}),
+		processDone: newAsyncStatus(),
+		readerDone:  newAsyncStatus(),
+		streamFile:  streamFile,
+		stderrFile:  stderrFile,
+		streamPath:  streamFile.Name(),
+		stderrPath:  stderrFile.Name(),
+		workingDir:  workingDir,
+	}
+	go func() {
+		// StdoutPipe must be drained before Wait so the final result and log tail
+		// cannot be truncated when Claude exits.
+		<-running.readerDone.done
+		running.processDone.complete(command.Wait())
+	}()
+	go readStream(io.TeeReader(stdout, streamFile), running)
+	return running, nil
+}
+
+func (c *claude) cleanupUnstartedProcess(streamFile, stderrFile *os.File, workingDir string, cause error) error {
+	streamPath := streamFile.Name()
+	stderrPath := stderrFile.Name()
+	closeErr := errors.Join(streamFile.Close(), stderrFile.Close())
+	persistErr := errors.Join(
+		persistArtifact(streamPath, filepath.Join(workingDir, streamArtifactName)),
+		persistArtifact(stderrPath, filepath.Join(workingDir, stderrArtifactName)),
+	)
+	return errors.Join(cause, closeErr, persistErr)
+}
+
+func readStream(reader io.Reader, running *runningProcess) {
+	var readErr error
+	defer func() {
+		running.readerDone.complete(readErr)
+		close(running.results)
+	}()
+
+	decoder := json.NewDecoder(reader)
+	for {
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			readErr = fmt.Errorf("decode Claude stream: %w", err)
+			return
+		}
+
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			readErr = fmt.Errorf("decode Claude stream envelope: %w", err)
+			return
+		}
+		if envelope.Type != "result" {
+			continue
+		}
+		var result resultEvent
+		if err := json.Unmarshal(raw, &result); err != nil {
+			readErr = fmt.Errorf("decode Claude result: %w", err)
+			return
+		}
+		select {
+		case running.results <- result:
+		case <-running.stopping:
+		}
+	}
 }
 
 func (c *claude) createSkillsPlugin() error {
@@ -166,239 +309,92 @@ func findSkillDirectories(root string) ([]string, error) {
 	return directories, nil
 }
 
-func (c *claude) createHookFiles() error {
-	events, err := os.CreateTemp("", "token-bench-claude-events-*.jsonl")
-	if err != nil {
-		return fmt.Errorf("create Claude hook stream: %w", err)
-	}
-	c.eventsPath = events.Name()
-	if err := events.Close(); err != nil {
-		_ = c.cleanupFiles()
-		return fmt.Errorf("close Claude hook stream: %w", err)
-	}
-
-	settings, err := os.CreateTemp("", "token-bench-claude-settings-*.json")
-	if err != nil {
-		_ = c.cleanupFiles()
-		return fmt.Errorf("create Claude settings: %w", err)
-	}
-	c.settingsPath = settings.Name()
-	hookCommand := "cat >> " + shellQuote(c.eventsPath) + "; printf '\\n' >> " + shellQuote(c.eventsPath)
-	configuration := map[string]any{
-		"hooks": map[string]any{
-			"Stop": []any{map[string]any{
-				"hooks": []any{map[string]any{"type": "command", "command": hookCommand}},
-			}},
-		},
-	}
-	if err := json.NewEncoder(settings).Encode(configuration); err != nil {
-		_ = settings.Close()
-		_ = c.cleanupFiles()
-		return fmt.Errorf("write Claude settings: %w", err)
-	}
-	if err := settings.Close(); err != nil {
-		_ = c.cleanupFiles()
-		return fmt.Errorf("close Claude settings: %w", err)
-	}
-	return nil
-}
-
-func (c *claude) startCommand() string {
+func (c *claude) startArguments() []string {
 	arguments := []string{
-		"claude",
-		"--model", shellQuote(model),
-		"--effort", shellQuote(effort),
+		"--model", model,
+		"--effort", effort,
 		"--dangerously-skip-permissions",
-		"--setting-sources", "''",
-		"--settings", shellQuote(c.settingsPath),
+		"--setting-sources", "",
+		"-p",
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--verbose",
 	}
 	if c.pluginPath != "" {
-		arguments = append(arguments, "--plugin-dir", shellQuote(c.pluginPath))
+		arguments = append(arguments, "--plugin-dir", c.pluginPath)
 	}
-	return strings.Join(arguments, " ")
-}
-
-func (c *claude) waitUntilReady(ctx context.Context) error {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		output, err := command(ctx, "tmux", "capture-pane", "-p", "-t", c.paneID)
-		if err != nil {
-			return err
-		}
-		if strings.Contains(output, "❯") {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
+	return arguments
 }
 
 func (c *claude) SendMessage(message string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.paneID == "" {
+	if c.process == nil {
 		return "", errors.New("Claude is not started")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
-	defer cancel()
-	if err := pasteMessage(ctx, c.paneID, message); err != nil {
+	record := struct {
+		Type    string `json:"type"`
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+		ParentToolUseID *string `json:"parent_tool_use_id"`
+	}{Type: "user"}
+	record.Message.Role = "user"
+	record.Message.Content = message
+	if err := json.NewEncoder(c.process.stdin).Encode(record); err != nil {
 		return "", fmt.Errorf("send Claude prompt: %w", err)
 	}
-	event, err := c.waitForStop(ctx)
-	if err != nil {
-		return "", fmt.Errorf("wait for Claude completion: %w", err)
-	}
-	if event.TranscriptPath == "" {
-		return "", errors.New("Claude Stop hook did not provide a transcript path")
-	}
-	c.transcriptPath = event.TranscriptPath
-	reply, tokens, err := parseTranscript(c.transcriptPath)
-	if err != nil {
-		return "", err
-	}
-	c.lastReply = reply
-	c.tokens = tokens
-	return c.lastReply, nil
-}
 
-type stopEvent struct {
-	HookEventName  string `json:"hook_event_name"`
-	TranscriptPath string `json:"transcript_path"`
-}
-
-func (c *claude) waitForStop(ctx context.Context) (stopEvent, error) {
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
+	timer := time.NewTimer(time.Hour)
+	defer timer.Stop()
 	for {
-		file, err := os.Open(c.eventsPath)
-		if err != nil {
-			return stopEvent{}, fmt.Errorf("open Claude hook stream: %w", err)
-		}
-		if _, err := file.Seek(c.eventOffset, io.SeekStart); err != nil {
-			_ = file.Close()
-			return stopEvent{}, fmt.Errorf("seek Claude hook stream: %w", err)
-		}
-		reader := bufio.NewReader(file)
-		for {
-			line, readErr := reader.ReadString('\n')
-			if strings.HasSuffix(line, "\n") {
-				c.eventOffset += int64(len(line))
-				payload := strings.TrimSpace(line)
-				if payload == "" {
-					continue
-				}
-				var event stopEvent
-				if err := json.Unmarshal([]byte(payload), &event); err != nil {
-					_ = file.Close()
-					return stopEvent{}, fmt.Errorf("decode Claude Stop hook: %w", err)
-				}
-				if event.HookEventName == "Stop" {
-					_ = file.Close()
-					return event, nil
-				}
-			}
-			if readErr != nil {
-				if !errors.Is(readErr, io.EOF) {
-					_ = file.Close()
-					return stopEvent{}, fmt.Errorf("read Claude hook stream: %w", readErr)
-				}
-				break
-			}
-		}
-		if err := file.Close(); err != nil {
-			return stopEvent{}, fmt.Errorf("close Claude hook stream: %w", err)
-		}
 		select {
-		case <-ctx.Done():
-			return stopEvent{}, ctx.Err()
-		case <-ticker.C:
+		case result, ok := <-c.process.results:
+			if !ok {
+				return "", c.processFailure("Claude stream ended before a result", c.process)
+			}
+			c.addUsage(result)
+			if result.Origin.Kind == "task-notification" {
+				continue
+			}
+			if result.Subtype != "success" || result.IsError {
+				detail := strings.Join(result.Errors, "; ")
+				if detail == "" {
+					detail = "Claude reported an unsuccessful result"
+				}
+				return "", fmt.Errorf("Claude result %q: %s", result.Subtype, detail)
+			}
+			c.lastReply = result.Result
+			return c.lastReply, nil
+		case <-timer.C:
+			return "", errors.New("wait for Claude completion: timed out after 1h")
 		}
 	}
 }
 
-func parseTranscript(path string) (string, TokenCount, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", TokenCount{}, fmt.Errorf("open Claude transcript: %w", err)
-	}
-	defer file.Close()
-
-	type usage struct {
-		Input      int `json:"input_tokens"`
-		Output     int `json:"output_tokens"`
-		CacheRead  int `json:"cache_read_input_tokens"`
-		CacheWrite int `json:"cache_creation_input_tokens"`
-	}
-	type record struct {
-		Type    string `json:"type"`
-		UUID    string `json:"uuid"`
-		Message struct {
-			ID      string          `json:"id"`
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-			Usage   *usage          `json:"usage"`
-		} `json:"message"`
-	}
-
-	usages := make(map[string]usage)
-	lastReply := ""
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		var current record
-		if err := json.Unmarshal(scanner.Bytes(), &current); err != nil {
-			return "", TokenCount{}, fmt.Errorf("decode Claude transcript: %w", err)
-		}
-		if current.Type != "assistant" || current.Message.Role != "assistant" {
-			continue
-		}
-		if current.Message.Usage != nil {
-			key := current.Message.ID
-			if key == "" {
-				key = current.UUID
-			}
-			usages[key] = *current.Message.Usage
-		}
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(current.Message.Content, &blocks); err != nil {
-			return "", TokenCount{}, fmt.Errorf("decode Claude assistant content: %w", err)
-		}
-		var text strings.Builder
-		for _, block := range blocks {
-			if block.Type == "text" {
-				text.WriteString(block.Text)
-			}
-		}
-		if text.Len() > 0 {
-			lastReply = text.String()
+func (c *claude) addUsage(result resultEvent) {
+	if len(result.ModelUsage) == 0 {
+		c.tokens.Input += result.Usage.Input
+		c.tokens.Output += result.Usage.Output
+		c.tokens.CacheRead += result.Usage.CacheRead
+		c.tokens.CacheWrite += result.Usage.CacheWrite
+	} else {
+		for _, usage := range result.ModelUsage {
+			c.tokens.Input += usage.Input
+			c.tokens.Output += usage.Output
+			c.tokens.CacheRead += usage.CacheRead
+			c.tokens.CacheWrite += usage.CacheWrite
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return "", TokenCount{}, fmt.Errorf("read Claude transcript: %w", err)
-	}
-	var tokens TokenCount
-	for _, current := range usages {
-		tokens.Input += current.Input
-		tokens.Output += current.Output
-		tokens.CacheRead += current.CacheRead
-		tokens.CacheWrite += current.CacheWrite
-	}
-	tokens.Total = tokens.Input + tokens.Output + tokens.CacheRead + tokens.CacheWrite
-	return lastReply, tokens, nil
+	c.tokens.Total = c.tokens.Input + c.tokens.Output + c.tokens.CacheRead + c.tokens.CacheWrite
 }
 
 func (c *claude) TokenCount() (TokenCount, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.paneID == "" {
+	if c.process == nil {
 		return TokenCount{}, errors.New("Claude is not started")
 	}
 	return c.tokens, nil
@@ -411,80 +407,114 @@ func (c *claude) End() error {
 }
 
 func (c *claude) endLocked() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var result error
-	if c.paneID != "" {
-		if _, err := command(ctx, "tmux", "kill-pane", "-t", c.paneID); err != nil {
-			result = fmt.Errorf("kill Claude tmux pane: %w", err)
-		}
-		c.paneID = ""
+	if c.process == nil {
+		return c.cleanupPlugin()
 	}
-	return errors.Join(result, c.cleanupFiles())
+	running := c.process
+	running.stopOnce.Do(func() { close(running.stopping) })
+
+	var result error
+	if err := running.stdin.Close(); err != nil {
+		result = errors.Join(result, fmt.Errorf("close Claude stdin: %w", err))
+	}
+	select {
+	case <-running.processDone.done:
+	case <-time.After(10 * time.Second):
+		result = errors.Join(result, errors.New("Claude did not exit within 10s"))
+		if err := running.command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			result = errors.Join(result, fmt.Errorf("kill Claude: %w", err))
+		}
+		<-running.processDone.done
+	}
+	if err := running.processDone.result(); err != nil {
+		result = errors.Join(result, fmt.Errorf("wait for Claude: %w", err))
+	}
+
+	select {
+	case <-running.readerDone.done:
+		if err := running.readerDone.result(); err != nil {
+			result = errors.Join(result, err)
+		}
+	case <-time.After(2 * time.Second):
+		result = errors.Join(result, errors.New("Claude stream reader did not stop within 2s"))
+	}
+	if err := running.streamFile.Close(); err != nil {
+		result = errors.Join(result, fmt.Errorf("close Claude stream log: %w", err))
+	}
+	if err := running.stderrFile.Close(); err != nil {
+		result = errors.Join(result, fmt.Errorf("close Claude stderr log: %w", err))
+	}
+	if err := persistArtifact(running.streamPath, filepath.Join(running.workingDir, streamArtifactName)); err != nil {
+		result = errors.Join(result, fmt.Errorf("persist Claude stream log: %w", err))
+	}
+	if err := persistArtifact(running.stderrPath, filepath.Join(running.workingDir, stderrArtifactName)); err != nil {
+		result = errors.Join(result, fmt.Errorf("persist Claude stderr log: %w", err))
+	}
+	c.process = nil
+	return errors.Join(result, c.cleanupPlugin())
 }
 
-func (c *claude) cleanupFiles() error {
-	var result error
-	for label, path := range map[string]string{"hook stream": c.eventsPath, "settings": c.settingsPath} {
-		if path == "" {
-			continue
+func (c *claude) processFailure(prefix string, running *runningProcess) error {
+	parts := []string{prefix}
+	select {
+	case <-running.readerDone.done:
+		if err := running.readerDone.result(); err != nil {
+			parts = append(parts, err.Error())
 		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			result = errors.Join(result, fmt.Errorf("remove Claude %s: %w", label, err))
+	default:
+	}
+	select {
+	case <-running.processDone.done:
+		if err := running.processDone.result(); err != nil {
+			parts = append(parts, err.Error())
+		}
+	default:
+	}
+	if err := running.stderrFile.Sync(); err == nil {
+		if content, readErr := os.ReadFile(running.stderrPath); readErr == nil {
+			if stderr := strings.TrimSpace(string(content)); stderr != "" {
+				parts = append(parts, stderr)
+			}
 		}
 	}
-	if c.pluginPath != "" {
-		if err := os.RemoveAll(c.pluginPath); err != nil {
-			result = errors.Join(result, fmt.Errorf("remove Claude skills plugin: %w", err))
-		}
+	return errors.New(strings.Join(parts, ": "))
+}
+
+func (c *claude) cleanupPlugin() error {
+	if c.pluginPath == "" {
+		return nil
 	}
-	c.eventsPath = ""
-	c.settingsPath = ""
+	err := os.RemoveAll(c.pluginPath)
 	c.pluginPath = ""
-	return result
+	if err != nil {
+		return fmt.Errorf("remove Claude skills plugin: %w", err)
+	}
+	return nil
 }
 
-func pasteMessage(ctx context.Context, paneID, message string) error {
-	file, err := os.CreateTemp("", "token-bench-claude-prompt-*.txt")
+func persistArtifact(source, destination string) error {
+	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(source, destination); err == nil {
+		return nil
+	}
+
+	input, err := os.Open(source)
 	if err != nil {
 		return err
 	}
-	path := file.Name()
-	defer os.Remove(path)
-	if _, err := file.WriteString(message); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	buffer := "token-bench-claude-" + strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	if _, err := command(ctx, "tmux", "load-buffer", "-b", buffer, path); err != nil {
-		return err
-	}
-	if _, err := command(ctx, "tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", paneID); err != nil {
-		return err
-	}
-	_, err = command(ctx, "tmux", "send-keys", "-t", paneID, "Enter")
-	return err
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
-}
-
-func sendShellCommand(ctx context.Context, paneID, value string) error {
-	if _, err := command(ctx, "tmux", "send-keys", "-t", paneID, "-l", value); err != nil {
-		return err
-	}
-	_, err := command(ctx, "tmux", "send-keys", "-t", paneID, "Enter")
-	return err
-}
-
-func command(ctx context.Context, name string, args ...string) (string, error) {
-	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		return err
 	}
-	return string(output), nil
+	if _, err := io.Copy(output, input); err != nil {
+		_ = output.Close()
+		return err
+	}
+	if err := output.Close(); err != nil {
+		return err
+	}
+	return os.Remove(source)
 }

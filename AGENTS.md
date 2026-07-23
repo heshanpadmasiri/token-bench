@@ -2,8 +2,9 @@
 - For each task/harness/language implementation implement it as a separate internal package and have the corresponding public package expose a single public function to initialize the struct. 
 
 ## Harness
-- Start a new tmux pane for running the harness and send keystrokes there directly
-  - This is so that user can see the harness in action while running the task
+- Run each harness as an isolated process in the task's target directory and use the harness's native programmatic transport when available.
+  - Run Claude Code as a direct `-p` process with streaming JSON input and output; keep its event stream internal.
+  - Harnesses without a programmatic transport may use a separate tmux pane and direct keystrokes so the user can observe them.
 - Tricky part is getting feedback task is completed.
   - See if the harness has some sort of RPC/websocket/http server implementation that can be used by the benchmark tool for this.  
     - Clearly state all the possible such options to user for a given harness and ask for feedback
