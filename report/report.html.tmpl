@@ -36,21 +36,21 @@
     .unavailable { font-size: 18px; fill: #667085; }
     table { width: 100%; margin-top: 1.5rem; border-collapse: collapse; }
     th, td { padding: .65rem; border-bottom: 1px solid #e5e9f0; text-align: right; }
-    th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+    th:first-child, td:first-child, th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
     th { color: #475467; font-size: .85rem; }
   </style>
 </head>
 <body>
 <main>
   <h1>Token Bench Report</h1>
-  <div class="muted">Harness: <strong>{{.Harness}}</strong> · {{.TotalRuns}} runs</div>
+  <div class="muted">Harnesses: {{range $index, $harness := .Harnesses}}{{if $index}} · {{end}}<strong>{{$harness}}</strong>{{end}} · {{.TotalRuns}} runs</div>
   <div class="muted">Skills: {{range $index, $skills := .SkillsDirs}}{{if $index}} · {{end}}<strong>{{$skills}}</strong>{{end}}</div>
   {{if .FailedRuns}}<div class="warning">Warning: {{.FailedRuns}} of {{.TotalRuns}} runs failed. Failed runs are excluded from all averages.</div>{{end}}
 
   {{range .Tasks}}
   <section class="task">
     <h2>{{.Name}}</h2>
-    <div class="muted">{{.TotalRuns}} runs across {{len .Languages}} language/skills variants; averages use successful runs only.</div>
+    <div class="muted">{{.TotalRuns}} runs across {{len .Languages}} language/skills/harness variants; averages use successful runs only.</div>
     <details>
       <summary>Benchmark prompt template</summary>
       <pre>{{.PromptTemplate}}</pre>
@@ -63,7 +63,7 @@
         {{$chart := .}}
         <figcaption>{{.Name}}</figcaption>
         <div class="legend">Whiskers: range · box: Q1–Q3 · dark line: median · dot: mean · orange line: mean ± 1σ</div>
-        <svg viewBox="0 0 1500 {{.Height}}" role="img" aria-label="{{.Name}} distribution by language and skills">
+        <svg viewBox="0 0 1500 {{.Height}}" role="img" aria-label="{{.Name}} distribution by language, skills, and harness">
           {{range .Ticks}}
           <line class="grid" x1="{{printf "%.2f" .X}}" x2="{{printf "%.2f" .X}}" y1="5" y2="{{$chart.AxisY}}"></line>
           <line class="axis" x1="{{printf "%.2f" .X}}" x2="{{printf "%.2f" .X}}" y1="{{$chart.AxisY}}" y2="{{$chart.AxisTickY}}"></line>
@@ -73,7 +73,7 @@
           {{range .Boxes}}
           <g transform="translate(0,{{.Y}})">
             <text class="language" x="0" y="-9" dominant-baseline="middle">{{.Language}}</text>
-            <text class="skills" x="0" y="15" dominant-baseline="middle">{{.SkillsDir}}</text>
+            <text class="skills" x="0" y="15" dominant-baseline="middle">{{.SkillsDir}} · {{.Harness}}</text>
             {{if .Available}}
             <line class="row-scale" x1="500" x2="1150" y1="0" y2="0"></line>
             <line class="whisker" x1="{{printf "%.2f" .MinimumX}}" x2="{{printf "%.2f" .MaximumX}}" y1="0" y2="0"></line>
@@ -95,10 +95,10 @@
     </div>
 
     <table>
-      <thead><tr><th>Language</th><th>Skills</th><th>Successful</th><th>Failed</th><th>Pass rate</th><th>Avg fixes</th><th>Avg input</th><th>Avg output</th><th>Avg total</th></tr></thead>
+      <thead><tr><th>Language</th><th>Skills</th><th>Harness</th><th>Successful</th><th>Failed</th><th>Pass rate</th><th>Avg fixes</th><th>Avg input</th><th>Avg output</th><th>Avg total</th></tr></thead>
       <tbody>
         {{range .Languages}}<tr>
-          <td>{{.Name}}</td><td>{{.SkillsDir}}</td><td>{{.Successful}}</td><td>{{.Failed}}</td><td>{{printf "%.1f" .PassRate}}%</td>
+          <td>{{.Name}}</td><td>{{.SkillsDir}}</td><td>{{.Harness}}</td><td>{{.Successful}}</td><td>{{.Failed}}</td><td>{{printf "%.1f" .PassRate}}%</td>
           <td>{{printf "%.1f" .AvgCorrections}}</td><td>{{printf "%.1f" .AvgInput}}</td><td>{{printf "%.1f" .AvgOutput}}</td><td>{{printf "%.1f" .AvgTotal}}</td>
         </tr>{{end}}
       </tbody>

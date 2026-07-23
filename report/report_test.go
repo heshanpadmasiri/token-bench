@@ -52,7 +52,7 @@ func TestGenerateComparesSkillsConfigurations(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := output.String()
-	for _, expected := range []string{"No skills", skills, "2 language/skills variants"} {
+	for _, expected := range []string{"No skills", skills, "2 language/skills/harness variants"} {
 		if !strings.Contains(html, expected) {
 			t.Errorf("report does not contain %q", expected)
 		}
@@ -69,18 +69,39 @@ func TestDistribution(t *testing.T) {
 	}
 }
 
-func TestGenerateRejectsMultipleHarnesses(t *testing.T) {
+func TestGenerateComparesMultipleHarnesses(t *testing.T) {
 	root := t.TempDir()
-	for _, harness := range []string{"pi", "other"} {
-		writeTestResult(t, filepath.Join(root, harness, "result.json"), result.Result{
-			SchemaVersion: result.SchemaVersion, Task: "router", Language: "go", Harness: harness,
-			Run: 1, RequestedRuns: 1, Passed: true,
+	for _, test := range []struct {
+		language string
+		harness  string
+		total    int
+	}{
+		{language: "go", harness: "zeta", total: 222},
+		{language: "go", harness: "alpha", total: 111},
+		{language: "java", harness: "alpha", total: 333},
+	} {
+		writeTestResult(t, filepath.Join(root, test.language, test.harness, "result.json"), result.Result{
+			SchemaVersion: result.SchemaVersion, Task: "router", Language: test.language, Harness: test.harness,
+			Run: 1, RequestedRuns: 1, Passed: true, Tokens: result.TokenCount{Total: test.total},
 		})
 	}
+
 	var output bytes.Buffer
-	err := Generate([]string{root}, &output)
-	if err == nil || !strings.Contains(err.Error(), "multiple harnesses") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := Generate([]string{root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	html := output.String()
+	for _, expected := range []string{"Harnesses:", "alpha", "zeta", "111.0", "222.0", "333.0", "3 language/skills/harness variants"} {
+		if !strings.Contains(html, expected) {
+			t.Errorf("report does not contain %q", expected)
+		}
+	}
+	table := html[strings.LastIndex(html, "<table"):]
+	goAlpha := strings.Index(table, "<td>go</td><td>No skills</td><td>alpha</td>")
+	goZeta := strings.Index(table, "<td>go</td><td>No skills</td><td>zeta</td>")
+	javaAlpha := strings.Index(table, "<td>java</td><td>No skills</td><td>alpha</td>")
+	if goAlpha < 0 || goZeta < 0 || javaAlpha < 0 || goAlpha > goZeta || goZeta > javaAlpha {
+		t.Fatalf("harness rows are not grouped and alphabetical: %s", table)
 	}
 }
 
