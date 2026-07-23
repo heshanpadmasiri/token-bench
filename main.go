@@ -161,6 +161,9 @@ func run(arguments []string) (exitCode int) {
 
 func executeRun(current runResult, directory string, definition task.Task, implementation language.Language, newHarness func() harness.Harness, traceProvider tracing.Tracer) (result runResult) {
 	result = current
+	agent := newHarness()
+	result.Model = agent.Model()
+	result.ThinkingBudget = agent.ThinkingBudget()
 	var benchmark tracing.BenchmarkSpan
 	if traceProvider != nil {
 		benchmark = traceProvider.StartBenchmarkSpan(definition.Name, current.Harness, current.SkillsDir)
@@ -200,7 +203,6 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 		result.Error = "task allocated no application port"
 		return result
 	}
-	agent := newHarness()
 	if err := agent.Start(directory, benchmark); err != nil {
 		result.Error = err.Error()
 		return result

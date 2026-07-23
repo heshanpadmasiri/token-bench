@@ -15,6 +15,8 @@ type (
 	}
 
 	Harness interface {
+		Model() string
+		ThinkingBudget() string
 		// Start launches the harness. benchmark may be nil when tracing is disabled.
 		Start(workingDir string, benchmark tracing.BenchmarkSpan) error
 		// Send a message to the given harness. Message could be either the starting prompt or feedback

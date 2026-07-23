@@ -108,6 +108,14 @@ func New(config Config) *claude {
 	return &claude{config: config}
 }
 
+func (c *claude) Model() string {
+	return model
+}
+
+func (c *claude) ThinkingBudget() string {
+	return effort
+}
+
 func (c *claude) Start(workingDir string, benchmark tracing.BenchmarkSpan) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

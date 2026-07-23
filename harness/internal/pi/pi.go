@@ -85,6 +85,14 @@ func New(config Config) *pi {
 	return &pi{config: config}
 }
 
+func (p *pi) Model() string {
+	return model
+}
+
+func (p *pi) ThinkingBudget() string {
+	return thinking
+}
+
 func (p *pi) Start(workingDir string, benchmark tracing.BenchmarkSpan) error {
 	if benchmark != nil {
 		panic("tracing is not supported by the Pi harness")

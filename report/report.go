@@ -26,11 +26,13 @@ type discoveredResult struct {
 }
 
 type reportData struct {
-	Harnesses  []string
-	SkillsDirs []string
-	TotalRuns  int
-	FailedRuns int
-	Tasks      []taskData
+	Harnesses       []string
+	Models          []string
+	ThinkingBudgets []string
+	SkillsDirs      []string
+	TotalRuns       int
+	FailedRuns      int
+	Tasks           []taskData
 }
 
 type taskData struct {
@@ -47,6 +49,8 @@ type languageData struct {
 	Name           string
 	SkillsDir      string
 	Harness        string
+	Model          string
+	ThinkingBudget string
 	Runs           int
 	Successful     int
 	Failed         int
@@ -79,6 +83,8 @@ type boxData struct {
 	Language        string
 	SkillsDir       string
 	Harness         string
+	Model           string
+	ThinkingBudget  string
 	Available       bool
 	Y               int
 	MinimumX        float64
@@ -173,13 +179,17 @@ func discover(paths []string) ([]discoveredResult, error) {
 }
 
 type variantKey struct {
-	language  string
-	skillsDir string
-	harness   string
+	language       string
+	skillsDir      string
+	harness        string
+	model          string
+	thinkingBudget string
 }
 
 func aggregate(discovered []discoveredResult) (reportData, error) {
 	harnesses := make(map[string]struct{})
+	models := make(map[string]struct{})
+	thinkingBudgets := make(map[string]struct{})
 	skillsDirs := make(map[string]struct{})
 	promptTemplates := make(map[string]string)
 	byTask := make(map[string]map[variantKey][]result.Result)
@@ -199,6 +209,8 @@ func aggregate(discovered []discoveredResult) (reportData, error) {
 		}
 		promptTemplates[current.Task] = promptTemplate
 		harnesses[current.Harness] = struct{}{}
+		models[current.Model] = struct{}{}
+		thinkingBudgets[current.ThinkingBudget] = struct{}{}
 		skillsDirs[current.SkillsDir] = struct{}{}
 		if !current.Passed {
 			data.FailedRuns++
@@ -206,10 +218,15 @@ func aggregate(discovered []discoveredResult) (reportData, error) {
 		if byTask[current.Task] == nil {
 			byTask[current.Task] = make(map[variantKey][]result.Result)
 		}
-		key := variantKey{language: current.Language, skillsDir: current.SkillsDir, harness: current.Harness}
+		key := variantKey{
+			language: current.Language, skillsDir: current.SkillsDir, harness: current.Harness,
+			model: current.Model, thinkingBudget: current.ThinkingBudget,
+		}
 		byTask[current.Task][key] = append(byTask[current.Task][key], current)
 	}
 	data.Harnesses = sortedKeys(harnesses)
+	data.Models = sortedKeys(models)
+	data.ThinkingBudgets = sortedKeys(thinkingBudgets)
 	for _, skillsDir := range sortedKeys(skillsDirs) {
 		data.SkillsDirs = append(data.SkillsDirs, skillsLabel(skillsDir))
 	}
@@ -235,7 +252,10 @@ func aggregate(discovered []discoveredResult) (reportData, error) {
 }
 
 func summarizeLanguage(key variantKey, runs []result.Result) languageData {
-	value := languageData{Name: key.language, SkillsDir: skillsLabel(key.skillsDir), Harness: key.harness, Runs: len(runs)}
+	value := languageData{
+		Name: key.language, SkillsDir: skillsLabel(key.skillsDir), Harness: key.harness,
+		Model: key.model, ThinkingBudget: key.thinkingBudget, Runs: len(runs),
+	}
 	for _, run := range runs {
 		if !run.Passed {
 			value.Failed++
@@ -298,6 +318,8 @@ func makeChart(name string, languages []languageData, metric func(languageData) 
 			Language:        language.Name,
 			SkillsDir:       language.SkillsDir,
 			Harness:         language.Harness,
+			Model:           language.Model,
+			ThinkingBudget:  language.ThinkingBudget,
 			Available:       len(values) > 0,
 			Y:               30 + index*72,
 			MinimumX:        scale(minimum),
@@ -363,7 +385,13 @@ func sortedVariantKeys(values map[variantKey][]result.Result) []variantKey {
 		if keys[i].skillsDir != keys[j].skillsDir {
 			return keys[i].skillsDir < keys[j].skillsDir
 		}
-		return keys[i].harness < keys[j].harness
+		if keys[i].harness != keys[j].harness {
+			return keys[i].harness < keys[j].harness
+		}
+		if keys[i].model != keys[j].model {
+			return keys[i].model < keys[j].model
+		}
+		return keys[i].thinkingBudget < keys[j].thinkingBudget
 	})
 	return keys
 }

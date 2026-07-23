@@ -19,6 +19,12 @@ func TestStartPanicsWhenTracingIsProvided(t *testing.T) {
 	_ = New(Config{}).Start(t.TempDir(), unsupportedBenchmark{})
 }
 
+func TestReportsConfiguredModelAndThinkingBudget(t *testing.T) {
+	agent := New(Config{})
+	if agent.Model() != "gpt-5.6-sol" || agent.ThinkingBudget() != "high" {
+		t.Fatalf("unexpected metadata: model=%q thinkingBudget=%q", agent.Model(), agent.ThinkingBudget())
+	}
+}
 func TestStartArgumentsUseRPCModeAndOnlyConfiguredSkills(t *testing.T) {
 	agent := New(Config{SkillsDir: "/tmp/skills with 'quote"})
 	expected := []string{

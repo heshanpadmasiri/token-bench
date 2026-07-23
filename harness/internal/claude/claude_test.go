@@ -8,6 +8,13 @@ import (
 	"testing"
 )
 
+func TestReportsConfiguredModelAndThinkingBudget(t *testing.T) {
+	agent := New(Config{})
+	if agent.Model() != "opus" || agent.ThinkingBudget() != "high" {
+		t.Fatalf("unexpected metadata: model=%q thinkingBudget=%q", agent.Model(), agent.ThinkingBudget())
+	}
+}
+
 func TestStartArgumentsUseStreamingPrintMode(t *testing.T) {
 	agent := New(Config{})
 	agent.pluginPath = "/tmp/plugin with spaces"

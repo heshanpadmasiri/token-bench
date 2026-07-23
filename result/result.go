@@ -9,7 +9,12 @@ import (
 	"path/filepath"
 )
 
-const SchemaVersion = 2
+const (
+	SchemaVersion       = 3
+	legacySchemaVersion = 2
+	unknownModel        = "unknown-model"
+	unknownThinking     = "unknown-thinking"
+)
 
 // TokenCount contains the token usage dimensions recorded for a run.
 type TokenCount struct {
@@ -26,6 +31,8 @@ type Result struct {
 	Task           string     `json:"task"`
 	Language       string     `json:"language"`
 	Harness        string     `json:"harness"`
+	Model          string     `json:"model"`
+	ThinkingBudget string     `json:"thinkingBudget"`
 	SkillsDir      string     `json:"skillsDir,omitempty"`
 	PromptTemplate string     `json:"promptTemplate,omitempty"`
 	Run            int        `json:"run"`
@@ -58,6 +65,14 @@ func Read(path string) (Result, error) {
 	if err := json.Unmarshal(content, &value); err != nil {
 		return Result{}, err
 	}
+	if value.SchemaVersion == legacySchemaVersion {
+		if value.Model == "" {
+			value.Model = unknownModel
+		}
+		if value.ThinkingBudget == "" {
+			value.ThinkingBudget = unknownThinking
+		}
+	}
 	if err := value.Validate(); err != nil {
 		return Result{}, err
 	}
@@ -66,11 +81,14 @@ func Read(path string) (Result, error) {
 
 // Validate checks the persisted schema and required metadata.
 func (r Result) Validate() error {
-	if r.SchemaVersion != SchemaVersion {
+	if r.SchemaVersion != legacySchemaVersion && r.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported result schema version %d", r.SchemaVersion)
 	}
 	if r.Task == "" || r.Language == "" || r.Harness == "" {
 		return errors.New("task, language, and harness are required")
+	}
+	if r.SchemaVersion == SchemaVersion && (r.Model == "" || r.ThinkingBudget == "") {
+		return errors.New("model and thinkingBudget are required")
 	}
 	if r.SkillsDir != "" && !filepath.IsAbs(r.SkillsDir) {
 		return errors.New("skillsDir must be an absolute path")

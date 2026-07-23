@@ -52,7 +52,7 @@ func TestGenerateComparesSkillsConfigurations(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := output.String()
-	for _, expected := range []string{"No skills", skills, "2 language/skills/harness variants"} {
+	for _, expected := range []string{"No skills", skills, "2 language/skills/harness/model/thinking-budget variants"} {
 		if !strings.Contains(html, expected) {
 			t.Errorf("report does not contain %q", expected)
 		}
@@ -91,15 +91,15 @@ func TestGenerateComparesMultipleHarnesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := output.String()
-	for _, expected := range []string{"Harnesses:", "alpha", "zeta", "111.0", "222.0", "333.0", "3 language/skills/harness variants"} {
+	for _, expected := range []string{"Harnesses:", "Models:", "Thinking budgets:", "alpha", "zeta", "test-model", "test-thinking", "111.0", "222.0", "333.0", "3 language/skills/harness/model/thinking-budget variants"} {
 		if !strings.Contains(html, expected) {
 			t.Errorf("report does not contain %q", expected)
 		}
 	}
 	table := html[strings.LastIndex(html, "<table"):]
-	goAlpha := strings.Index(table, "<td>go</td><td>No skills</td><td>alpha</td>")
-	goZeta := strings.Index(table, "<td>go</td><td>No skills</td><td>zeta</td>")
-	javaAlpha := strings.Index(table, "<td>java</td><td>No skills</td><td>alpha</td>")
+	goAlpha := strings.Index(table, "<td>go</td><td>No skills</td><td>alpha</td><td>test-model</td><td>test-thinking</td>")
+	goZeta := strings.Index(table, "<td>go</td><td>No skills</td><td>zeta</td><td>test-model</td><td>test-thinking</td>")
+	javaAlpha := strings.Index(table, "<td>java</td><td>No skills</td><td>alpha</td><td>test-model</td><td>test-thinking</td>")
 	if goAlpha < 0 || goZeta < 0 || javaAlpha < 0 || goAlpha > goZeta || goZeta > javaAlpha {
 		t.Fatalf("harness rows are not grouped and alphabetical: %s", table)
 	}
@@ -110,7 +110,7 @@ func TestGenerateUsesEmbeddedTemplateForLegacyResults(t *testing.T) {
 	path := filepath.Join(root, "result.json")
 	value := result.Result{
 		SchemaVersion: result.SchemaVersion, Task: "content-based-router", Language: "go", Harness: "pi",
-		Run: 1, RequestedRuns: 1, Passed: true,
+		Model: "test-model", ThinkingBudget: "test-thinking", Run: 1, RequestedRuns: 1, Passed: true,
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -124,6 +124,52 @@ func TestGenerateUsesEmbeddedTemplateForLegacyResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{"Benchmark prompt template", "Implement the Content-Based Router", "{{index .Ports 0}}"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("report does not contain %q", expected)
+		}
+	}
+}
+
+func TestGenerateSeparatesModelAndThinkingBudgetVariants(t *testing.T) {
+	root := t.TempDir()
+	for index, metadata := range []struct {
+		model    string
+		thinking string
+	}{
+		{model: "model-a", thinking: "low"},
+		{model: "model-b", thinking: "high"},
+	} {
+		writeTestResult(t, filepath.Join(root, string(rune('a'+index)), "result.json"), result.Result{
+			SchemaVersion: result.SchemaVersion, Task: "router", Language: "go", Harness: "pi",
+			Model: metadata.model, ThinkingBudget: metadata.thinking,
+			Run: 1, RequestedRuns: 1, Passed: true,
+		})
+	}
+
+	var output bytes.Buffer
+	if err := Generate([]string{root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"model-a", "model-b", "low", "high", "2 language/skills/harness/model/thinking-budget variants"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("report does not contain %q", expected)
+		}
+	}
+}
+
+func TestGenerateShowsFallbackMetadataForLegacyResults(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "result.json")
+	content := `{"schemaVersion":2,"task":"router","language":"go","harness":"pi","promptTemplate":"test prompt template","run":1,"requestedRuns":1,"passed":true,"tokens":{}}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := Generate([]string{root}, &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"unknown-model", "unknown-thinking"} {
 		if !strings.Contains(output.String(), expected) {
 			t.Errorf("report does not contain %q", expected)
 		}
@@ -147,6 +193,12 @@ func TestGenerateRejectsDifferentPromptTemplatesForTask(t *testing.T) {
 
 func writeTestResult(t *testing.T, path string, value result.Result) {
 	t.Helper()
+	if value.Model == "" {
+		value.Model = "test-model"
+	}
+	if value.ThinkingBudget == "" {
+		value.ThinkingBudget = "test-thinking"
+	}
 	if value.PromptTemplate == "" {
 		value.PromptTemplate = "test prompt template"
 	}
