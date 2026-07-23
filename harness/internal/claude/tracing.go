@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -12,16 +13,21 @@ import (
 
 // traceAdapter converts Claude's stream-json protocol into backend-independent spans.
 type traceAdapter struct {
-	mu        sync.Mutex
-	benchmark tracing.BenchmarkSpan
-	turn      tracing.TurnSpan
-	tools     map[string]tracing.ToolSpan
-	nextInput []string
-	closed    bool
+	mu            sync.Mutex
+	benchmark     tracing.BenchmarkSpan
+	turn          tracing.TurnSpan
+	tools         map[string]tracing.ToolSpan
+	nextInput     []string
+	fallbackModel string
+	closed        bool
 }
 
-func newTraceAdapter(benchmark tracing.BenchmarkSpan) *traceAdapter {
-	return &traceAdapter{benchmark: benchmark, tools: make(map[string]tracing.ToolSpan)}
+func newTraceAdapter(benchmark tracing.BenchmarkSpan, fallbackModel string) *traceAdapter {
+	return &traceAdapter{
+		benchmark:     benchmark,
+		fallbackModel: fallbackModel,
+		tools:         make(map[string]tracing.ToolSpan),
+	}
 }
 
 func (a *traceAdapter) SetNextInput(input string) {
@@ -51,17 +57,11 @@ func (a *traceAdapter) Process(eventType string, raw json.RawMessage) error {
 	case "user":
 		return a.processUser(raw)
 	case "result":
-		var event struct {
-			Subtype string   `json:"subtype"`
-			IsError bool     `json:"is_error"`
-			Errors  []string `json:"errors"`
-			Origin  struct {
-				Kind string `json:"kind"`
-			} `json:"origin"`
-		}
+		var event resultEvent
 		if err := json.Unmarshal(raw, &event); err != nil {
 			return fmt.Errorf("decode result event: %w", err)
 		}
+		a.benchmark.AddModelUsage(traceModelUsage(event, a.fallbackModel))
 		if event.Origin.Kind != "task-notification" {
 			description := ""
 			if event.Subtype != "success" || event.IsError {
@@ -74,6 +74,34 @@ func (a *traceAdapter) Process(eventType string, raw json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+func traceModelUsage(event resultEvent, fallbackModel string) []tracing.ModelUsage {
+	if len(event.ModelUsage) == 0 {
+		usage := event.Usage
+		if usage.Input == 0 && usage.Output == 0 && usage.CacheRead == 0 && usage.CacheWrite == 0 {
+			return nil
+		}
+		return []tracing.ModelUsage{{
+			Model: fallbackModel, Input: usage.Input, Output: usage.Output,
+			CacheRead: usage.CacheRead, CacheWrite: usage.CacheWrite,
+		}}
+	}
+
+	models := make([]string, 0, len(event.ModelUsage))
+	for model := range event.ModelUsage {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	usages := make([]tracing.ModelUsage, 0, len(models))
+	for _, model := range models {
+		usage := event.ModelUsage[model]
+		usages = append(usages, tracing.ModelUsage{
+			Model: model, Input: usage.Input, Output: usage.Output,
+			CacheRead: usage.CacheRead, CacheWrite: usage.CacheWrite,
+		})
+	}
+	return usages
 }
 
 func (a *traceAdapter) processAssistant(raw json.RawMessage) error {

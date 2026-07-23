@@ -22,6 +22,17 @@ type (
 	BenchmarkSpan interface {
 		Span
 		StartTurn() TurnSpan
+		// AddModelUsage adds benchmark usage grouped by concrete model identifier.
+		AddModelUsage([]ModelUsage)
+	}
+
+	// ModelUsage contains non-overlapping token usage dimensions for one model.
+	ModelUsage struct {
+		Model      string
+		Input      int
+		Output     int
+		CacheRead  int
+		CacheWrite int
 	}
 
 	// TurnSpan records one model turn and its tool calls.

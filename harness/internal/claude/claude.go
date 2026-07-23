@@ -190,7 +190,7 @@ func (c *claude) startProcess(executable, workingDir string, benchmark tracing.B
 		streamPath:  streamFile.Name(),
 		stderrPath:  stderrFile.Name(),
 		workingDir:  workingDir,
-		trace:       newTraceAdapter(benchmark),
+		trace:       newTraceAdapter(benchmark, c.Model()),
 	}
 	go func() {
 		// StdoutPipe must be drained before Wait so the final result and log tail

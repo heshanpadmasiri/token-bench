@@ -159,10 +159,11 @@ func TestStartReportsPrematureProcessExitAndPersistsLogs(t *testing.T) {
 
 type unsupportedBenchmark struct{}
 
-func (unsupportedBenchmark) StartTurn() tracing.TurnSpan { return nil }
-func (unsupportedBenchmark) SetOK()                      {}
-func (unsupportedBenchmark) SetError(string)             {}
-func (unsupportedBenchmark) End()                        {}
+func (unsupportedBenchmark) StartTurn() tracing.TurnSpan        { return nil }
+func (unsupportedBenchmark) AddModelUsage([]tracing.ModelUsage) {}
+func (unsupportedBenchmark) SetOK()                             {}
+func (unsupportedBenchmark) SetError(string)                    {}
+func (unsupportedBenchmark) End()                               {}
 
 func containsArgument(arguments []string, expected string) bool {
 	for _, argument := range arguments {

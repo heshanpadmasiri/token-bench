@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"token-bench/tracing"
@@ -10,7 +11,7 @@ import (
 
 func TestTraceAdapterMapsAssistantEventsAndToolResults(t *testing.T) {
 	benchmark := &recordingBenchmark{}
-	adapter := newTraceAdapter(benchmark)
+	adapter := newTraceAdapter(benchmark, model)
 	adapter.SetNextInput("build the server")
 	processTraceEvent(t, adapter, "assistant", `{
 		"type":"assistant","message":{"content":[
@@ -45,7 +46,7 @@ func TestTraceAdapterMapsAssistantEventsAndToolResults(t *testing.T) {
 
 func TestTraceAdapterMarksFailedToolsAndResults(t *testing.T) {
 	benchmark := &recordingBenchmark{}
-	adapter := newTraceAdapter(benchmark)
+	adapter := newTraceAdapter(benchmark, model)
 	processTraceEvent(t, adapter, "assistant", `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"bash","name":"Bash","input":{"command":"false"}}]}}`)
 	processTraceEvent(t, adapter, "user", `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash","content":"exit 1","is_error":true}]}}`)
 	processTraceEvent(t, adapter, "result", `{"type":"result","subtype":"error","is_error":true,"errors":["model failed"]}`)
@@ -59,9 +60,32 @@ func TestTraceAdapterMarksFailedToolsAndResults(t *testing.T) {
 	}
 }
 
+func TestTraceAdapterRecordsConcreteAndFallbackModelUsage(t *testing.T) {
+	benchmark := &recordingBenchmark{}
+	adapter := newTraceAdapter(benchmark, "configured-model")
+	processTraceEvent(t, adapter, "result", `{
+		"type":"result","subtype":"success","modelUsage":{
+			"model-b":{"inputTokens":2,"outputTokens":3,"cacheReadInputTokens":5,"cacheCreationInputTokens":7},
+			"model-a":{"inputTokens":11,"outputTokens":13,"cacheReadInputTokens":17,"cacheCreationInputTokens":19}
+		}}`)
+	processTraceEvent(t, adapter, "result", `{
+		"type":"result","subtype":"success",
+		"usage":{"input_tokens":23,"output_tokens":29,"cache_read_input_tokens":31,"cache_creation_input_tokens":37}
+	}`)
+
+	want := []tracing.ModelUsage{
+		{Model: "model-a", Input: 11, Output: 13, CacheRead: 17, CacheWrite: 19},
+		{Model: "model-b", Input: 2, Output: 3, CacheRead: 5, CacheWrite: 7},
+		{Model: "configured-model", Input: 23, Output: 29, CacheRead: 31, CacheWrite: 37},
+	}
+	if !reflect.DeepEqual(benchmark.usage, want) {
+		t.Fatalf("unexpected traced usage:\nwant: %+v\n got: %+v", want, benchmark.usage)
+	}
+}
+
 func TestTraceAdapterMapsKnownClaudeTools(t *testing.T) {
 	benchmark := &recordingBenchmark{}
-	adapter := newTraceAdapter(benchmark)
+	adapter := newTraceAdapter(benchmark, model)
 	processTraceEvent(t, adapter, "assistant", `{
 		"type":"assistant","message":{"content":[
 			{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"main.go","offset":2,"limit":10}},
@@ -105,12 +129,16 @@ func assertRecordedTool(t *testing.T, tool *recordingTool, name, input, output s
 
 type recordingBenchmark struct {
 	turns []*recordingTurn
+	usage []tracing.ModelUsage
 }
 
 func (b *recordingBenchmark) StartTurn() tracing.TurnSpan {
 	turn := &recordingTurn{}
 	b.turns = append(b.turns, turn)
 	return turn
+}
+func (b *recordingBenchmark) AddModelUsage(usage []tracing.ModelUsage) {
+	b.usage = append(b.usage, usage...)
 }
 func (*recordingBenchmark) SetOK()          {}
 func (*recordingBenchmark) SetError(string) {}

@@ -12,6 +12,7 @@ type (
 	Tracer          = shared.Tracer
 	Span            = shared.Span
 	BenchmarkSpan   = shared.BenchmarkSpan
+	ModelUsage      = shared.ModelUsage
 	TurnSpan        = shared.TurnSpan
 	ToolSpan        = shared.ToolSpan
 	GenericToolSpan = shared.GenericToolSpan

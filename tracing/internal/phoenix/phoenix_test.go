@@ -59,6 +59,11 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: time.Second}, exporter, true)
 
 	benchmark := tracer.StartBenchmarkSpan("claim-check", "pi", "/tmp/skills")
+	benchmark.AddModelUsage([]shared.ModelUsage{
+		{Model: "model-b", Input: 2, Output: 3, CacheRead: 5, CacheWrite: 7},
+		{Model: "model-a", Input: 11, Output: 13, CacheRead: 17, CacheWrite: 19},
+	})
+	benchmark.AddModelUsage([]shared.ModelUsage{{Model: "model-a", Input: 23, Output: 29, CacheRead: 31, CacheWrite: 37}})
 	turn := benchmark.StartTurn()
 	turn.SetLLMInput("build the server")
 	turn.SetLLMOutput("done")
@@ -86,10 +91,11 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 	read.End()
 	turn.End()
 	benchmark.End()
+	benchmark.End()
 
 	spans := exporter.GetSpans()
-	if len(spans) != 7 {
-		t.Fatalf("got %d spans, want 7", len(spans))
+	if len(spans) != 9 {
+		t.Fatalf("got %d spans, want 9", len(spans))
 	}
 	byName := make(map[string]tracetest.SpanStub, len(spans))
 	for _, current := range spans {
@@ -118,6 +124,40 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 			t.Errorf("%q parent is %s, want LLM %s", name, current.Parent.SpanID(), llm.SpanContext.SpanID())
 		}
 	}
+
+	var usageModels []string
+	usageByModel := make(map[string]tracetest.SpanStub)
+	for _, current := range spans {
+		if current.Name != "llm.usage" {
+			continue
+		}
+		attributes := attributeMap(current.Attributes)
+		model := attributes[llmModelName]
+		usageModels = append(usageModels, model)
+		usageByModel[model] = current
+		if current.Parent.SpanID() != root.SpanContext.SpanID() {
+			t.Errorf("usage for %q parent is %s, want benchmark %s", model, current.Parent.SpanID(), root.SpanContext.SpanID())
+		}
+	}
+	if len(usageModels) != 2 || usageModels[0] != "model-a" || usageModels[1] != "model-b" {
+		t.Fatalf("usage spans are not deterministic: %v", usageModels)
+	}
+	assertAttributes(t, usageByModel["model-a"].Attributes, map[string]string{
+		openInferenceSpanKind: "LLM",
+		llmModelName:          "model-a",
+		llmTokenPrompt:        "138",
+		llmTokenCompletion:    "42",
+		llmTokenTotal:         "180",
+		llmCacheRead:          "48",
+		llmCacheWrite:         "56",
+	})
+	assertAttributes(t, usageByModel["model-b"].Attributes, map[string]string{
+		llmTokenPrompt:     "14",
+		llmTokenCompletion: "3",
+		llmTokenTotal:      "17",
+		llmCacheRead:       "5",
+		llmCacheWrite:      "7",
+	})
 
 	assertAttributes(t, root.Attributes, map[string]string{
 		openInferenceSpanKind: "AGENT",
@@ -239,7 +279,7 @@ func assertAttributes(t *testing.T, attributes []attribute.KeyValue, expected ma
 func attributeMap(attributes []attribute.KeyValue) map[string]string {
 	result := make(map[string]string, len(attributes))
 	for _, item := range attributes {
-		result[string(item.Key)] = item.Value.AsString()
+		result[string(item.Key)] = item.Value.Emit()
 	}
 	return result
 }

@@ -82,12 +82,19 @@ func TestPhoenixExportIntegration(t *testing.T) {
 	secondTurn.SetLLMOutput("implementation complete")
 	secondTurn.End()
 
+	benchmark.AddModelUsage([]tracing.ModelUsage{
+		{Model: "claude-opus-4-6", Input: 100, Output: 20, CacheRead: 30, CacheWrite: 40},
+		{Model: "claude-haiku-4-5", Input: 50, Output: 10, CacheRead: 5, CacheWrite: 15},
+	})
 	benchmark.End()
 	if err := tracer.Shutdown(); err != nil {
 		t.Fatalf("flush trace to Phoenix: %v", err)
 	}
 
 	trace := waitForPhoenixTrace(t, apiEndpoint, project, headers)
+	if trace.TokenCountPrompt != 240 || trace.TokenCountCompletion != 30 || trace.TokenCountTotal != 270 {
+		t.Fatalf("unexpected Phoenix trace token counts: prompt=%d completion=%d total=%d", trace.TokenCountPrompt, trace.TokenCountCompletion, trace.TokenCountTotal)
+	}
 	byName := make(map[string][]phoenixSpan, len(trace.Spans))
 	for _, span := range trace.Spans {
 		byName[span.Name] = append(byName[span.Name], span)
@@ -95,8 +102,8 @@ func TestPhoenixExportIntegration(t *testing.T) {
 			t.Errorf("span %q status is %q, want OK", span.Name, span.StatusCode)
 		}
 	}
-	if len(trace.Spans) != 8 || len(byName["benchmark"]) != 1 || len(byName["llm"]) != 2 {
-		t.Fatalf("Phoenix trace did not contain one benchmark and two LLM turns: %+v", trace.Spans)
+	if len(trace.Spans) != 10 || len(byName["benchmark"]) != 1 || len(byName["llm"]) != 2 || len(byName["llm.usage"]) != 2 {
+		t.Fatalf("Phoenix trace did not contain the benchmark, LLM turns, and usage summaries: %+v", trace.Spans)
 	}
 	root := byName["benchmark"][0]
 	if root.SpanKind != "AGENT" || spanParentID(root) != "" {
@@ -109,6 +116,21 @@ func TestPhoenixExportIntegration(t *testing.T) {
 		}
 		llmIDs[llm.SpanID] = struct{}{}
 	}
+	usageByModel := make(map[string]phoenixSpan, 2)
+	for _, usage := range byName["llm.usage"] {
+		model, _ := usage.Attributes["llm.model_name"].(string)
+		if usage.SpanKind != "LLM" || spanParentID(usage) != root.SpanID || model == "" {
+			t.Fatalf("unexpected LLM usage summary: %+v", usage)
+		}
+		usageByModel[model] = usage
+	}
+	assertPhoenixNumber(t, usageByModel["claude-opus-4-6"], "llm.token_count.prompt", 170)
+	assertPhoenixNumber(t, usageByModel["claude-opus-4-6"], "llm.token_count.completion", 20)
+	assertPhoenixNumber(t, usageByModel["claude-opus-4-6"], "llm.token_count.total", 190)
+	assertPhoenixNumber(t, usageByModel["claude-opus-4-6"], "llm.token_count.prompt_details.cache_read", 30)
+	assertPhoenixNumber(t, usageByModel["claude-opus-4-6"], "llm.token_count.prompt_details.cache_write", 40)
+	assertPhoenixNumber(t, usageByModel["claude-haiku-4-5"], "llm.token_count.total", 80)
+
 	tools := make(map[string]phoenixSpan, 5)
 	for _, name := range []string{"search", "bash", "edit", "write", "read"} {
 		if len(byName[name]) != 1 {
@@ -198,16 +220,28 @@ func phoenixAPIEndpoint(collectorEndpoint string) string {
 }
 
 type phoenixTrace struct {
-	TraceID string        `json:"trace_id"`
-	Spans   []phoenixSpan `json:"spans"`
+	TraceID              string        `json:"trace_id"`
+	TokenCountPrompt     int           `json:"token_count_prompt"`
+	TokenCountCompletion int           `json:"token_count_completion"`
+	TokenCountTotal      int           `json:"token_count_total"`
+	Spans                []phoenixSpan `json:"spans"`
 }
 
 type phoenixSpan struct {
-	SpanID     string  `json:"span_id"`
-	ParentID   *string `json:"parent_id"`
-	Name       string  `json:"name"`
-	SpanKind   string  `json:"span_kind"`
-	StatusCode string  `json:"status_code"`
+	SpanID     string         `json:"span_id"`
+	ParentID   *string        `json:"parent_id"`
+	Name       string         `json:"name"`
+	SpanKind   string         `json:"span_kind"`
+	StatusCode string         `json:"status_code"`
+	Attributes map[string]any `json:"attributes"`
+}
+
+func assertPhoenixNumber(t *testing.T, span phoenixSpan, name string, want float64) {
+	t.Helper()
+	value, ok := span.Attributes[name].(float64)
+	if !ok || value != want {
+		t.Errorf("Phoenix span %q attribute %q = %#v, want %v; attributes: %v", span.Name, name, span.Attributes[name], want, span.Attributes)
+	}
 }
 
 func spanParentID(span phoenixSpan) string {
@@ -252,9 +286,18 @@ func waitForPhoenixTrace(t *testing.T, apiEndpoint, project string, headers map[
 				lastStatus = fmt.Sprintf("decode response: %v", err)
 			} else {
 				for _, trace := range result.Data {
-					if isCompleteIntegrationTrace(trace) {
-						return trace
+					if !isCompleteIntegrationTrace(trace) {
+						continue
 					}
+					attributes, attributeErr := fetchPhoenixSpanAttributes(client, apiEndpoint, project, trace.TraceID, headers)
+					if attributeErr != nil {
+						lastStatus = attributeErr.Error()
+						continue
+					}
+					for index := range trace.Spans {
+						trace.Spans[index].Attributes = attributes[trace.Spans[index].SpanID]
+					}
+					return trace
 				}
 				lastStatus = fmt.Sprintf("project has %d traces but the complete integration trace is not available yet", len(result.Data))
 			}
@@ -267,15 +310,54 @@ func waitForPhoenixTrace(t *testing.T, apiEndpoint, project string, headers map[
 	return phoenixTrace{}
 }
 
+func fetchPhoenixSpanAttributes(client *http.Client, apiEndpoint, project, traceID string, headers map[string]string) (map[string]map[string]any, error) {
+	query := strings.TrimRight(apiEndpoint, "/") + "/v1/projects/" + url.PathEscape(project) + "/spans?trace_id=" + url.QueryEscape(traceID)
+	request, err := http.NewRequest(http.MethodGet, query, nil)
+	if err != nil {
+		return nil, err
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch Phoenix span attributes: HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Data []struct {
+			Context struct {
+				SpanID string `json:"span_id"`
+			} `json:"context"`
+			Attributes map[string]any `json:"attributes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("decode Phoenix span attributes: %w", err)
+	}
+	attributes := make(map[string]map[string]any, len(result.Data))
+	for _, span := range result.Data {
+		attributes[span.Context.SpanID] = span.Attributes
+	}
+	return attributes, nil
+}
+
 func isCompleteIntegrationTrace(trace phoenixTrace) bool {
-	if len(trace.Spans) != 8 {
+	if len(trace.Spans) != 10 {
 		return false
 	}
 	counts := make(map[string]int, len(trace.Spans))
 	for _, span := range trace.Spans {
 		counts[span.Name]++
 	}
-	if counts["benchmark"] != 1 || counts["llm"] != 2 {
+	if counts["benchmark"] != 1 || counts["llm"] != 2 || counts["llm.usage"] != 2 {
 		return false
 	}
 	for _, name := range []string{"search", "bash", "edit", "write", "read"} {

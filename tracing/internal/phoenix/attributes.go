@@ -10,6 +10,12 @@ import (
 const (
 	openInferenceSpanKind = "openinference.span.kind"
 	openInferenceProject  = "openinference.project.name"
+	llmModelName          = "llm.model_name"
+	llmTokenPrompt        = "llm.token_count.prompt"
+	llmTokenCompletion    = "llm.token_count.completion"
+	llmTokenTotal         = "llm.token_count.total"
+	llmCacheRead          = "llm.token_count.prompt_details.cache_read"
+	llmCacheWrite         = "llm.token_count.prompt_details.cache_write"
 	inputValue            = "input.value"
 	inputMIMEType         = "input.mime_type"
 	outputValue           = "output.value"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -55,6 +56,11 @@ type benchmarkSpan struct {
 	span
 	context context.Context
 	tracer  oteltrace.Tracer
+
+	usageMu    sync.Mutex
+	usageOnce  sync.Once
+	usageEnded bool
+	usage      map[string]shared.ModelUsage
 }
 
 func (b *benchmarkSpan) StartTurn() shared.TurnSpan {
@@ -62,6 +68,57 @@ func (b *benchmarkSpan) StartTurn() shared.TurnSpan {
 		attribute.String(openInferenceSpanKind, "LLM"),
 	))
 	return &turnSpan{span: span{span: child}, context: ctx, tracer: b.tracer}
+}
+
+func (b *benchmarkSpan) AddModelUsage(usages []shared.ModelUsage) {
+	b.usageMu.Lock()
+	defer b.usageMu.Unlock()
+	if b.usageEnded {
+		return
+	}
+	if b.usage == nil {
+		b.usage = make(map[string]shared.ModelUsage)
+	}
+	for _, usage := range usages {
+		if usage.Model == "" || usage.Input == 0 && usage.Output == 0 && usage.CacheRead == 0 && usage.CacheWrite == 0 {
+			continue
+		}
+		combined := b.usage[usage.Model]
+		combined.Model = usage.Model
+		combined.Input += usage.Input
+		combined.Output += usage.Output
+		combined.CacheRead += usage.CacheRead
+		combined.CacheWrite += usage.CacheWrite
+		b.usage[usage.Model] = combined
+	}
+}
+
+func (b *benchmarkSpan) End() {
+	b.usageOnce.Do(func() {
+		b.usageMu.Lock()
+		b.usageEnded = true
+		usages := make([]shared.ModelUsage, 0, len(b.usage))
+		for _, usage := range b.usage {
+			usages = append(usages, usage)
+		}
+		b.usageMu.Unlock()
+
+		sort.Slice(usages, func(i, j int) bool { return usages[i].Model < usages[j].Model })
+		for _, usage := range usages {
+			prompt := usage.Input + usage.CacheRead + usage.CacheWrite
+			_, child := b.tracer.Start(b.context, "llm.usage", oteltrace.WithAttributes(
+				attribute.String(openInferenceSpanKind, "LLM"),
+				attribute.String(llmModelName, usage.Model),
+				attribute.Int(llmTokenPrompt, prompt),
+				attribute.Int(llmTokenCompletion, usage.Output),
+				attribute.Int(llmTokenTotal, prompt+usage.Output),
+				attribute.Int(llmCacheRead, usage.CacheRead),
+				attribute.Int(llmCacheWrite, usage.CacheWrite),
+			))
+			(&span{span: child}).End()
+		}
+	})
+	b.span.End()
 }
 
 type turnSpan struct {
