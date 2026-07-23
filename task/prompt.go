@@ -98,6 +98,8 @@ func BenchmarkPromptTemplateFor(name string) (string, error) {
 		definition = NewContentEnricher()
 	case "dead-letter-channel":
 		definition = NewDeadLetterChannel()
+	case "multi-consumer":
+		definition = NewMultiConsumer()
 	case "scatter-gather":
 		definition = NewScatterGather()
 	default:

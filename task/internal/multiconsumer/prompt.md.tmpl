@@ -1,0 +1,89 @@
+Implement an asynchronous multi-consumer order fulfillment service.
+
+## Benchmark-owned infrastructure
+
+Apache Kafka and PostgreSQL are already running for this task. They are owned by the benchmark: use them, but **never stop, kill, reconfigure, or replace either container**. Do not create alternative brokers or databases and do not publish your own test events.
+
+Kafka connection:
+
+- Bootstrap server: `{{.KafkaBroker}}`
+- Security protocol: `SASL_PLAINTEXT`
+- SASL mechanism: `PLAIN`
+- Username: `{{.KafkaUser}}`
+- Password: `{{.KafkaPassword}}`
+- Consumer group: `{{.ConsumerGroup}}`
+
+Routes:
+
+| `fulfillmentType` | Kafka topic | PostgreSQL URL |
+| --- | --- | --- |
+| `shipment` | `{{.ShipmentTopic}}` | `{{.ShipmentDatabaseURL}}` |
+| `store_pickup` | `{{.PickupTopic}}` | `{{.PickupDatabaseURL}}` |
+| `digital` | `{{.DigitalTopic}}` | `{{.DigitalDatabaseURL}}` |
+
+The three topics, three logical databases, and the `fulfillment_events` table in each database already exist. Do not change their definitions.
+
+```sql
+CREATE TABLE fulfillment_events (
+    event_id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    customer_id TEXT NOT NULL,
+    total_amount NUMERIC(12,2) NOT NULL,
+    currency CHAR(3) NOT NULL,
+    payload JSONB NOT NULL,
+    consumed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+## HTTP ingestion
+
+Implement `POST /orders`. The request must be a JSON object satisfying:
+
+- `eventId`, `orderId`, and `customerId` are non-empty strings.
+- `occurredAt` is an RFC 3339 timestamp.
+- `fulfillmentType` is exactly `shipment`, `store_pickup`, or `digital`.
+- `totalAmount` is a JSON number greater than or equal to zero.
+- `currency` is exactly three uppercase ASCII letters.
+- Additional properties are allowed and must be preserved.
+
+Malformed or invalid requests return HTTP 400 and must not publish to Kafka. For a valid request, publish the exact raw request body to only the topic selected by the top-level `fulfillmentType`. Use `eventId` as the Kafka record key. Wait for Kafka to acknowledge the record, then return HTTP 202 with `Content-Type: application/json` and exactly:
+
+```json
+{"status":"accepted","eventId":"<eventId>"}
+```
+
+If Kafka cannot acknowledge the publication, return HTTP 503.
+
+## Consumers
+
+Start three consumers concurrently when the application starts, one for each topic. Use the supplied consumer group and SASL credentials. For each record:
+
+1. Decode and validate the event.
+2. Insert it into the `fulfillment_events` table in that route's database, including the complete event in `payload`.
+3. Make repeated delivery idempotent by using `event_id` as the identity; duplicate events must leave exactly one row.
+4. Commit the Kafka offset only after the database operation succeeds. Retry database failures without losing the event.
+
+`GET /health` must return a 2xx response only after the Kafka connection, all three database connections, and all consumers are ready.
+
+## Example requests
+
+Shipment:
+
+```json
+{"eventId":"evt-01JNX2T4A8FQ","orderId":"ORD-2025-1042","occurredAt":"2025-03-08T10:15:30Z","customerId":"CUS-8821","fulfillmentType":"shipment","totalAmount":129.90,"currency":"USD","destination":{"country":"US","postalCode":"98101"},"items":[{"sku":"SHOE-RUN-BLK-42","quantity":1}]}
+```
+
+Store pickup:
+
+```json
+{"eventId":"evt-01JNX2V7M21R","orderId":"ORD-2025-1043","occurredAt":"2025-03-08T10:17:05Z","customerId":"CUS-1940","fulfillmentType":"store_pickup","totalAmount":48.50,"currency":"GBP","storeId":"LON-017","pickupWindow":"2025-03-08T16:00:00Z","items":[{"sku":"HEADPHONES-WL-02","quantity":1}]}
+```
+
+Digital:
+
+```json
+{"eventId":"evt-01JNX2XK9C5P","orderId":"ORD-2025-1044","occurredAt":"2025-03-08T10:20:11Z","customerId":"CUS-7342","fulfillmentType":"digital","totalAmount":19.99,"currency":"EUR","deliveryEmail":"buyer@example.test","items":[{"sku":"EBOOK-DISTRIBUTED-SYSTEMS","quantity":1}]}
+```
+
+Do not leave the application running when finished because the benchmark starts and stops it for checks.

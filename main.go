@@ -23,7 +23,7 @@ import (
 const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--target=DIR] [--skills=DIR] [--phoenix-endpoint=URL]
 
 Implementations:
-  task:      claim-check, content-based-router, content-enricher, dead-letter-channel, scatter-gather
+  task:      claim-check, content-based-router, content-enricher, dead-letter-channel, multi-consumer, scatter-gather
   language:  ballerina, go, java, python
   harness:   claude, pi
 
@@ -290,6 +290,8 @@ func selectTask(name string) (task.Task, error) {
 		return task.NewContentEnricher(), nil
 	case "dead-letter-channel":
 		return task.NewDeadLetterChannel(), nil
+	case "multi-consumer":
+		return task.NewMultiConsumer(), nil
 	case "scatter-gather":
 		return task.NewScatterGather(), nil
 	default:

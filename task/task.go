@@ -6,6 +6,7 @@ import (
 	"token-bench/task/internal/contentbasedrouting"
 	"token-bench/task/internal/contentenricher"
 	"token-bench/task/internal/deadletterchannel"
+	"token-bench/task/internal/multiconsumer"
 	"token-bench/task/internal/scattergather"
 )
 
@@ -89,6 +90,19 @@ func NewDeadLetterChannel() Task {
 		RequirementsTemplate: deadletterchannel.PromptTemplate(),
 		InitFn: func(resources AllocResources) TaskHandle {
 			return deadletterchannel.New(resources.Ports)
+		},
+	}
+}
+
+// NewMultiConsumer initializes the Multi-Consumer task.
+func NewMultiConsumer() Task {
+	return Task{
+		Name:                 "multi-consumer",
+		Resources:            Resources{NPorts: 3},
+		Endpoints:            []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/orders"}},
+		RequirementsTemplate: multiconsumer.PromptTemplate(),
+		InitFn: func(resources AllocResources) TaskHandle {
+			return multiconsumer.New(resources.Ports)
 		},
 	}
 }
