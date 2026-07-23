@@ -7,6 +7,7 @@ LANGUAGES ?= ballerina go java python
 HARNESS ?= claude
 SCENARIO ?=
 TARGET_DIR ?=
+PHOENIX_ENDPOINT ?=
 
 all: token-bench token-bench-report
 
@@ -20,7 +21,7 @@ run: token-bench
 	@test -n "$(SCENARIO)" || { echo "SCENARIO is required (for example, SCENARIO=content-based-router)" >&2; exit 2; }
 	@test -n "$(TARGET_DIR)" || { echo "TARGET_DIR is required (for example, TARGET_DIR=./results)" >&2; exit 2; }
 	@set -e; for language in $(LANGUAGES); do \
-		./token-bench "$(SCENARIO)" "$$language" "$(HARNESS)" --n-runs="$(RUNS)" --target="$(TARGET_DIR)"; \
+		./token-bench "$(SCENARIO)" "$$language" "$(HARNESS)" --n-runs="$(RUNS)" --target="$(TARGET_DIR)" $(if $(strip $(PHOENIX_ENDPOINT)),--phoenix-endpoint="$(PHOENIX_ENDPOINT)"); \
 	done
 
 clean:
