@@ -4,6 +4,7 @@
 ## Harness
 - Run each harness as an isolated process in the task's target directory and use the harness's native programmatic transport when available.
   - Run Claude Code as a direct `-p` process with streaming JSON input and output; keep its event stream internal.
+  - Run Pi as a direct `--mode rpc` process with JSONL over stdin and stdout; keep its event stream internal.
   - Harnesses without a programmatic transport may use a separate tmux pane and direct keystrokes so the user can observe them.
 - Tricky part is getting feedback task is completed.
   - See if the harness has some sort of RPC/websocket/http server implementation that can be used by the benchmark tool for this.  

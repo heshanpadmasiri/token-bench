@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +20,11 @@ import (
 )
 
 const (
-	provider = "openai-codex"
-	model    = "gpt-5.6-sol"
-	thinking = "high"
+	provider           = "openai-codex"
+	model              = "gpt-5.6-sol"
+	thinking           = "high"
+	streamArtifactName = "pi-stream.jsonl"
+	stderrArtifactName = "pi-stderr.log"
 )
 
 // Config contains Pi startup configuration.
@@ -34,16 +37,46 @@ type TokenCount = shared.TokenCount
 
 type pi struct {
 	config    Config
-	paneID    string
-	stream    string
-	events    chan map[string]json.RawMessage
-	readErr   chan error
-	cancel    context.CancelFunc
+	process   *runningProcess
 	sequence  atomic.Uint64
 	mu        sync.Mutex
 	stateMu   sync.RWMutex
 	tokens    TokenCount
 	lastReply string
+}
+
+type runningProcess struct {
+	command     *exec.Cmd
+	stdin       io.WriteCloser
+	events      chan map[string]json.RawMessage
+	stopping    chan struct{}
+	stopOnce    sync.Once
+	processDone *asyncStatus
+	readerDone  *asyncStatus
+	streamFile  *os.File
+	stderrFile  *os.File
+	streamPath  string
+	stderrPath  string
+	workingDir  string
+}
+
+type asyncStatus struct {
+	done chan struct{}
+	err  error
+}
+
+func newAsyncStatus() *asyncStatus {
+	return &asyncStatus{done: make(chan struct{})}
+}
+
+func (s *asyncStatus) complete(err error) {
+	s.err = err
+	close(s.done)
+}
+
+func (s *asyncStatus) result() error {
+	<-s.done
+	return s.err
 }
 
 // New initializes the private Pi implementation.
@@ -55,13 +88,11 @@ func (p *pi) Start(workingDir string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.paneID != "" {
+	if p.process != nil {
 		return errors.New("Pi is already started")
 	}
-	if _, err := exec.LookPath("tmux"); err != nil {
-		return fmt.Errorf("find tmux: %w", err)
-	}
-	if _, err := exec.LookPath("pi"); err != nil {
+	executable, err := exec.LookPath("pi")
+	if err != nil {
 		return fmt.Errorf("find pi: %w", err)
 	}
 	if info, err := os.Stat(workingDir); err != nil {
@@ -70,42 +101,20 @@ func (p *pi) Start(workingDir string) error {
 		return fmt.Errorf("working directory %q is not a directory", workingDir)
 	}
 
-	stream, err := os.CreateTemp("", "token-bench-pi-*.jsonl")
+	running, err := p.startProcess(executable, workingDir)
 	if err != nil {
-		return fmt.Errorf("create Pi RPC stream: %w", err)
+		return err
 	}
-	p.stream = stream.Name()
-	if err := stream.Close(); err != nil {
-		return fmt.Errorf("close Pi RPC stream: %w", err)
-	}
+	p.process = running
+	p.stateMu.Lock()
+	p.tokens = TokenCount{}
+	p.lastReply = ""
+	p.stateMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pane, err := command(ctx, "tmux", "split-window", "-P", "-F", "#{pane_id}", "-c", workingDir)
-	if err != nil {
-		_ = os.Remove(p.stream)
-		p.stream = ""
-		return fmt.Errorf("create tmux pane: %w", err)
-	}
-	p.paneID = strings.TrimSpace(pane)
-	if p.paneID == "" {
-		return errors.New("tmux returned an empty pane id")
-	}
-
-	readerCtx, readerCancel := context.WithCancel(context.Background())
-	p.cancel = readerCancel
-	p.events = make(chan map[string]json.RawMessage, 256)
-	p.readErr = make(chan error, 1)
-	go p.readEvents(readerCtx)
-
-	startCommand := p.startCommand()
-	if err := sendShellCommand(ctx, p.paneID, startCommand); err != nil {
-		_ = p.endLocked()
-		return fmt.Errorf("start Pi: %w", err)
-	}
-
 	id := p.nextID()
-	if err := p.send(ctx, id, map[string]any{"type": "get_state"}); err != nil {
+	if err := p.send(id, map[string]any{"type": "get_state"}); err != nil {
 		_ = p.endLocked()
 		return err
 	}
@@ -116,39 +125,96 @@ func (p *pi) Start(workingDir string) error {
 	return nil
 }
 
-func (p *pi) startCommand() string {
-	arguments := []string{
-		"stty", "-icanon", "-echo", ";",
-		"pi", "--mode", "rpc", "--no-session", "--no-skills",
-		"--provider", shellQuote(provider),
-		"--model", shellQuote(model),
-		"--thinking", shellQuote(thinking),
+func (p *pi) startProcess(executable, workingDir string) (*runningProcess, error) {
+	streamFile, err := os.CreateTemp("", "token-bench-pi-stream-*.jsonl")
+	if err != nil {
+		return nil, fmt.Errorf("create Pi stream log: %w", err)
 	}
-	if p.config.SkillsDir != "" {
-		arguments = append(arguments, "--skill", shellQuote(p.config.SkillsDir))
+	stderrFile, err := os.CreateTemp("", "token-bench-pi-stderr-*.log")
+	if err != nil {
+		_ = streamFile.Close()
+		_ = os.Remove(streamFile.Name())
+		return nil, fmt.Errorf("create Pi stderr log: %w", err)
 	}
-	arguments = append(arguments,
-		"|", "tee", "-a", shellQuote(p.stream),
-		";", "stty", "sane",
-	)
-	return strings.Join(arguments, " ")
+
+	command := exec.Command(executable, p.startArguments()...)
+	command.Dir = workingDir
+	command.Stderr = stderrFile
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		return nil, p.cleanupUnstartedProcess(streamFile, stderrFile, workingDir, fmt.Errorf("open Pi stdin: %w", err))
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, p.cleanupUnstartedProcess(streamFile, stderrFile, workingDir, fmt.Errorf("open Pi stdout: %w", err))
+	}
+	if err := command.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, p.cleanupUnstartedProcess(streamFile, stderrFile, workingDir, fmt.Errorf("start Pi: %w", err))
+	}
+
+	running := &runningProcess{
+		command:     command,
+		stdin:       stdin,
+		events:      make(chan map[string]json.RawMessage, 256),
+		stopping:    make(chan struct{}),
+		processDone: newAsyncStatus(),
+		readerDone:  newAsyncStatus(),
+		streamFile:  streamFile,
+		stderrFile:  stderrFile,
+		streamPath:  streamFile.Name(),
+		stderrPath:  stderrFile.Name(),
+		workingDir:  workingDir,
+	}
+	go func() {
+		// StdoutPipe must be drained before Wait so the final event and log tail
+		// cannot be truncated when Pi exits.
+		<-running.readerDone.done
+		running.processDone.complete(command.Wait())
+	}()
+	go p.readStream(io.TeeReader(stdout, streamFile), running)
+	return running, nil
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+func (p *pi) cleanupUnstartedProcess(streamFile, stderrFile *os.File, workingDir string, cause error) error {
+	streamPath := streamFile.Name()
+	stderrPath := stderrFile.Name()
+	closeErr := errors.Join(streamFile.Close(), stderrFile.Close())
+	persistErr := errors.Join(
+		persistArtifact(streamPath, filepath.Join(workingDir, streamArtifactName)),
+		persistArtifact(stderrPath, filepath.Join(workingDir, stderrArtifactName)),
+	)
+	return errors.Join(cause, closeErr, persistErr)
+}
+
+func (p *pi) startArguments() []string {
+	arguments := []string{
+		"--mode", "rpc",
+		"--no-session",
+		"--no-skills",
+		"--provider", provider,
+		"--model", model,
+		"--thinking", thinking,
+	}
+	if p.config.SkillsDir != "" {
+		arguments = append(arguments, "--skill", p.config.SkillsDir)
+	}
+	return arguments
 }
 
 func (p *pi) SendMessage(message string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.paneID == "" {
+	if p.process == nil {
 		return "", errors.New("Pi is not started")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	id := p.nextID()
-	if err := p.send(ctx, id, map[string]any{"type": "prompt", "message": message}); err != nil {
+	if err := p.send(id, map[string]any{"type": "prompt", "message": message}); err != nil {
 		return "", err
 	}
 	if _, err := p.waitResponse(ctx, id); err != nil {
@@ -165,7 +231,7 @@ func (p *pi) SendMessage(message string) (string, error) {
 func (p *pi) TokenCount() (TokenCount, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.paneID == "" {
+	if p.process == nil {
 		return TokenCount{}, errors.New("Pi is not started")
 	}
 	p.stateMu.RLock()
@@ -180,35 +246,56 @@ func (p *pi) End() error {
 }
 
 func (p *pi) endLocked() error {
-	if p.cancel != nil {
-		p.cancel()
-		p.cancel = nil
+	if p.process == nil {
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	running := p.process
+	running.stopOnce.Do(func() { close(running.stopping) })
+
 	var result error
-	if p.paneID != "" {
-		if _, err := command(ctx, "tmux", "kill-pane", "-t", p.paneID); err != nil {
-			result = fmt.Errorf("kill Pi tmux pane: %w", err)
-		}
-		p.paneID = ""
+	if err := running.stdin.Close(); err != nil {
+		result = errors.Join(result, fmt.Errorf("close Pi stdin: %w", err))
 	}
-	if p.stream != "" {
-		if err := os.Remove(p.stream); err != nil && !errors.Is(err, os.ErrNotExist) {
-			result = errors.Join(result, fmt.Errorf("remove Pi RPC stream: %w", err))
+	select {
+	case <-running.processDone.done:
+	case <-time.After(10 * time.Second):
+		result = errors.Join(result, errors.New("Pi did not exit within 10s"))
+		if err := running.command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			result = errors.Join(result, fmt.Errorf("kill Pi: %w", err))
 		}
-		p.stream = ""
+		<-running.processDone.done
 	}
+	if err := running.processDone.result(); err != nil {
+		result = errors.Join(result, fmt.Errorf("wait for Pi: %w", err))
+	}
+
+	select {
+	case <-running.readerDone.done:
+		if err := running.readerDone.result(); err != nil {
+			result = errors.Join(result, err)
+		}
+	case <-time.After(2 * time.Second):
+		result = errors.Join(result, errors.New("Pi stream reader did not stop within 2s"))
+	}
+	if err := running.streamFile.Close(); err != nil {
+		result = errors.Join(result, fmt.Errorf("close Pi stream log: %w", err))
+	}
+	if err := running.stderrFile.Close(); err != nil {
+		result = errors.Join(result, fmt.Errorf("close Pi stderr log: %w", err))
+	}
+	if err := persistArtifact(running.streamPath, filepath.Join(running.workingDir, streamArtifactName)); err != nil {
+		result = errors.Join(result, fmt.Errorf("persist Pi stream log: %w", err))
+	}
+	if err := persistArtifact(running.stderrPath, filepath.Join(running.workingDir, stderrArtifactName)); err != nil {
+		result = errors.Join(result, fmt.Errorf("persist Pi stderr log: %w", err))
+	}
+	p.process = nil
 	return result
 }
 
-func (p *pi) send(ctx context.Context, id string, fields map[string]any) error {
+func (p *pi) send(id string, fields map[string]any) error {
 	fields["id"] = id
-	encoded, err := json.Marshal(fields)
-	if err != nil {
-		return fmt.Errorf("encode Pi RPC command: %w", err)
-	}
-	if err := sendRPCRecord(ctx, p.paneID, string(encoded)); err != nil {
+	if err := json.NewEncoder(p.process.stdin).Encode(fields); err != nil {
 		return fmt.Errorf("send Pi RPC command: %w", err)
 	}
 	return nil
@@ -253,60 +340,52 @@ func (p *pi) waitEvent(ctx context.Context, eventType string) error {
 }
 
 func (p *pi) nextEvent(ctx context.Context) (map[string]json.RawMessage, error) {
+	running := p.process
 	select {
-	case event := <-p.events:
+	case event, ok := <-running.events:
+		if !ok {
+			return nil, p.processFailure("Pi RPC stream ended before the expected event", running)
+		}
 		return event, nil
-	case err := <-p.readErr:
-		return nil, err
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-func (p *pi) readEvents(ctx context.Context) {
-	file, err := os.Open(p.stream)
-	if err != nil {
-		p.reportReadError(fmt.Errorf("open Pi RPC stream: %w", err))
-		return
-	}
-	defer file.Close()
-	reader := bufio.NewReader(file)
-	var pending strings.Builder
+func (p *pi) readStream(reader io.Reader, running *runningProcess) {
+	var readErr error
+	defer func() {
+		running.readerDone.complete(readErr)
+		close(running.events)
+	}()
+
+	buffered := bufio.NewReader(reader)
 	for {
-		fragment, err := reader.ReadString('\n')
-		pending.WriteString(fragment)
-		if strings.HasSuffix(fragment, "\n") {
-			line := strings.TrimSuffix(pending.String(), "\n")
-			pending.Reset()
-			if strings.HasSuffix(line, "\r") {
-				line = strings.TrimSuffix(line, "\r")
-			}
+		line, err := buffered.ReadString('\n')
+		if line != "" {
+			line = strings.TrimSuffix(line, "\n")
+			line = strings.TrimSuffix(line, "\r")
 			if line != "" {
 				var event map[string]json.RawMessage
 				if decodeErr := json.Unmarshal([]byte(line), &event); decodeErr != nil {
-					p.reportReadError(fmt.Errorf("decode Pi RPC event: %w", decodeErr))
+					readErr = fmt.Errorf("decode Pi RPC event: %w", decodeErr)
 					return
 				}
 				p.observe(event)
 				select {
-				case p.events <- event:
-				case <-ctx.Done():
-					return
+				case running.events <- event:
+				case <-running.stopping:
 				}
 			}
 		}
 		if err == nil {
 			continue
 		}
-		if !errors.Is(err, io.EOF) {
-			p.reportReadError(fmt.Errorf("read Pi RPC stream: %w", err))
+		if errors.Is(err, io.EOF) {
 			return
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(20 * time.Millisecond):
-		}
+		readErr = fmt.Errorf("read Pi RPC stream: %w", err)
+		return
 	}
 }
 
@@ -341,11 +420,30 @@ func (p *pi) observe(event map[string]json.RawMessage) {
 	p.stateMu.Unlock()
 }
 
-func (p *pi) reportReadError(err error) {
+func (p *pi) processFailure(prefix string, running *runningProcess) error {
+	parts := []string{prefix}
 	select {
-	case p.readErr <- err:
+	case <-running.readerDone.done:
+		if err := running.readerDone.result(); err != nil {
+			parts = append(parts, err.Error())
+		}
 	default:
 	}
+	select {
+	case <-running.processDone.done:
+		if err := running.processDone.result(); err != nil {
+			parts = append(parts, err.Error())
+		}
+	default:
+	}
+	if err := running.stderrFile.Sync(); err == nil {
+		if content, readErr := os.ReadFile(running.stderrPath); readErr == nil {
+			if stderr := strings.TrimSpace(string(content)); stderr != "" {
+				parts = append(parts, stderr)
+			}
+		}
+	}
+	return errors.New(strings.Join(parts, ": "))
 }
 
 func (p *pi) nextID() string {
@@ -358,38 +456,29 @@ func stringValue(raw json.RawMessage) string {
 	return value
 }
 
-func sendShellCommand(ctx context.Context, paneID, value string) error {
-	if err := sendLiteral(ctx, paneID, value); err != nil {
+func persistArtifact(source, destination string) error {
+	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	_, err := command(ctx, "tmux", "send-keys", "-t", paneID, "Enter")
-	return err
-}
-
-func sendRPCRecord(ctx context.Context, paneID, value string) error {
-	if err := sendLiteral(ctx, paneID, value); err != nil {
-		return err
+	if err := os.Rename(source, destination); err == nil {
+		return nil
 	}
-	_, err := command(ctx, "tmux", "send-keys", "-t", paneID, "C-j")
-	return err
-}
 
-func sendLiteral(ctx context.Context, paneID, value string) error {
-	const chunkSize = 256
-	characters := []rune(value)
-	for start := 0; start < len(characters); start += chunkSize {
-		end := min(start+chunkSize, len(characters))
-		if _, err := command(ctx, "tmux", "send-keys", "-t", paneID, "-l", string(characters[start:end])); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func command(ctx context.Context, name string, args ...string) (string, error) {
-	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	input, err := os.Open(source)
 	if err != nil {
-		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		return err
 	}
-	return string(output), nil
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(output, input); err != nil {
+		_ = output.Close()
+		return err
+	}
+	if err := output.Close(); err != nil {
+		return err
+	}
+	return os.Remove(source)
 }
