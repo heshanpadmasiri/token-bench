@@ -104,7 +104,8 @@ func run(arguments []string) (exitCode int) {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	harnessConstructor, err := selectHarness(configuration.harness, harness.Config{SkillsDir: configuration.skillsDir})
+	statusUpdates := make(chan string, 1)
+	harnessConstructor, err := selectHarness(configuration.harness, harness.Config{SkillsDir: configuration.skillsDir, Status: statusUpdates})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -122,10 +123,12 @@ func run(arguments []string) (exitCode int) {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	display := startStatusDisplay(statusUpdates, os.Stderr)
 	result := report{Task: taskDefinition.Name, Language: configuration.language, Harness: configuration.harness, SkillsDir: configuration.skillsDir}
 	for run := 1; run <= configuration.runs; run++ {
 		directory, err := createRunDirectory(target, configuration.language, taskDefinition.Name, configuration.harness)
 		if err != nil {
+			_ = display.Close()
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -142,13 +145,20 @@ func run(arguments []string) (exitCode int) {
 		current = executeRun(current, directory, taskDefinition, languageImplementation, harnessConstructor, traceProvider)
 		result.Runs = append(result.Runs, current)
 		if err := benchresult.Write(filepath.Join(directory, "result.json"), current); err != nil {
+			_ = display.Close()
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
 	}
 	result.Mean, result.Median = summarize(result.Runs)
-	if err := printReport(result, target); err != nil {
+	finalResults, err := renderReport(result, target)
+	if err != nil {
+		_ = display.Close()
 		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := display.Finish(finalResults); err != nil {
+		fmt.Fprintln(os.Stderr, fmt.Errorf("render benchmark results: %w", err))
 		return 1
 	}
 	for _, current := range result.Runs {
@@ -521,35 +531,38 @@ func median(values []float64) float64 {
 	return (ordered[middle-1] + ordered[middle]) / 2
 }
 
-func printReport(result report, target string) error {
-	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+func renderReport(result report, target string) (string, error) {
+	var rendered strings.Builder
+	writer := tabwriter.NewWriter(&rendered, 0, 4, 2, ' ', 0)
 	skills := result.SkillsDir
 	if skills == "" {
 		skills = "No skills"
 	}
 	if _, err := fmt.Fprintf(writer, "SKILLS\t%s\n", skills); err != nil {
-		return err
+		return "", err
 	}
 	if _, err := fmt.Fprintln(writer, "RUN\tPASS\tFIXES\tINPUT\tOUTPUT\tCACHE READ\tCACHE WRITE\tTOTAL\tERROR"); err != nil {
-		return err
+		return "", err
 	}
 	for _, run := range result.Runs {
 		if _, err := fmt.Fprintf(writer, "%d\t%t\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n", run.Run, run.Passed, run.Corrections, run.Tokens.Input, run.Tokens.Output, run.Tokens.CacheRead, run.Tokens.CacheWrite, run.Tokens.Total, strings.Join(strings.Fields(run.Error), " ")); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if _, err := fmt.Fprintf(writer, "MEAN\t-\t-\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t-\n", result.Mean.Input, result.Mean.Output, result.Mean.CacheRead, result.Mean.CacheWrite, result.Mean.Total); err != nil {
-		return err
+		return "", err
 	}
 	if _, err := fmt.Fprintf(writer, "MEDIAN\t-\t-\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t-\n", result.Median.Input, result.Median.Output, result.Median.CacheRead, result.Median.CacheWrite, result.Median.Total); err != nil {
-		return err
+		return "", err
 	}
 	if err := writer.Flush(); err != nil {
-		return err
+		return "", err
 	}
 	pattern := runDirectoryPrefix(result.Language, result.Task, result.Harness) + "*"
-	_, err := fmt.Println("JSON results:", filepath.Join(target, pattern, "result.json"))
-	return err
+	if _, err := fmt.Fprintln(&rendered, "JSON results:", filepath.Join(target, pattern, "result.json")); err != nil {
+		return "", err
+	}
+	return rendered.String(), nil
 }
 
 func joinErrors(current, additional string) string {

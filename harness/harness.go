@@ -12,6 +12,9 @@ type (
 	// Config contains options shared by coding harness implementations.
 	Config struct {
 		SkillsDir string
+		// Status receives best-effort formatted activity updates. The caller owns
+		// the capacity-one channel and must not close it while a harness is running.
+		Status chan string
 	}
 
 	Harness interface {
@@ -29,10 +32,10 @@ type (
 
 // NewPi initializes the Pi coding harness.
 func NewPi(config Config) Harness {
-	return pi.New(pi.Config{SkillsDir: config.SkillsDir})
+	return pi.New(pi.Config{SkillsDir: config.SkillsDir, Status: config.Status})
 }
 
 // NewClaude initializes the Claude Code harness.
 func NewClaude(config Config) Harness {
-	return claude.New(claude.Config{SkillsDir: config.SkillsDir})
+	return claude.New(claude.Config{SkillsDir: config.SkillsDir, Status: config.Status})
 }

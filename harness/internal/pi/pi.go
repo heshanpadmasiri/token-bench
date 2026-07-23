@@ -31,19 +31,22 @@ const (
 // Config contains Pi startup configuration.
 type Config struct {
 	SkillsDir string
+	Status    chan string
 }
 
 // TokenCount contains usage dimensions reported by Pi.
 type TokenCount = shared.TokenCount
 
 type pi struct {
-	config    Config
-	process   *runningProcess
-	sequence  atomic.Uint64
-	mu        sync.Mutex
-	stateMu   sync.RWMutex
-	tokens    TokenCount
-	lastReply string
+	config     Config
+	process    *runningProcess
+	sequence   atomic.Uint64
+	mu         sync.Mutex
+	stateMu    sync.RWMutex
+	statusMu   sync.Mutex
+	tokens     TokenCount
+	lastReply  string
+	statusText strings.Builder
 }
 
 type runningProcess struct {
@@ -122,6 +125,9 @@ func (p *pi) Start(workingDir string, benchmark tracing.BenchmarkSpan) error {
 	p.tokens = TokenCount{}
 	p.lastReply = ""
 	p.stateMu.Unlock()
+	p.statusMu.Lock()
+	p.statusText.Reset()
+	p.statusMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -402,6 +408,7 @@ func (p *pi) readStream(reader io.Reader, running *runningProcess) {
 }
 
 func (p *pi) observe(event map[string]json.RawMessage) {
+	p.observeStatus(event)
 	if stringValue(event["type"]) != "message_end" {
 		return
 	}

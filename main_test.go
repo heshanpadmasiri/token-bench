@@ -138,6 +138,22 @@ func TestSummarize(t *testing.T) {
 	}
 }
 
+func TestRenderReportForFinalTUI(t *testing.T) {
+	result := report{
+		Task: "content-based-router", Language: "go", Harness: "pi",
+		Runs: []runResult{{Run: 1, Passed: true, Tokens: harnessTokenCount(10, 20)}},
+	}
+	rendered, err := renderReport(result, "/tmp/results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"RUN", "PASS", "1", "true", "JSON results:", "go-content-based-router-pi-*"} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("rendered report does not contain %q:\n%s", expected, rendered)
+		}
+	}
+}
+
 func harnessTokenCount(input, output int) benchresult.TokenCount {
 	return benchresult.TokenCount{Input: input, Output: output}
 }

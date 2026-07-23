@@ -27,6 +27,7 @@ const (
 // Config contains Claude Code startup configuration.
 type Config struct {
 	SkillsDir string
+	Status    chan string
 }
 
 // TokenCount contains usage dimensions reported by Claude Code.
@@ -55,6 +56,7 @@ type runningProcess struct {
 	stderrPath  string
 	workingDir  string
 	trace       *traceAdapter
+	status      chan string
 }
 
 type asyncStatus struct {
@@ -191,6 +193,7 @@ func (c *claude) startProcess(executable, workingDir string, benchmark tracing.B
 		stderrPath:  stderrFile.Name(),
 		workingDir:  workingDir,
 		trace:       newTraceAdapter(benchmark, c.Model()),
+		status:      c.config.Status,
 	}
 	go func() {
 		// StdoutPipe must be drained before Wait so the final result and log tail
@@ -243,6 +246,7 @@ func readStream(reader io.Reader, running *runningProcess) {
 			readErr = fmt.Errorf("trace Claude stream event: %w", err)
 			return
 		}
+		publishStatus(running.status, envelope.Type, raw)
 		if envelope.Type != "result" {
 			continue
 		}
