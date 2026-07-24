@@ -5,7 +5,7 @@ type (
 	// Tracer creates benchmark traces and owns the exporter lifecycle.
 	// The component that creates a Tracer must call Shutdown after ending all spans.
 	Tracer interface {
-		StartBenchmarkSpan(task, harness, skills string) BenchmarkSpan
+		StartBenchmarkSpan(language, task, harness, skills string) BenchmarkSpan
 		Shutdown() error
 	}
 

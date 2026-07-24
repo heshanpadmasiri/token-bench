@@ -55,11 +55,19 @@ func TestNormalizeConfigRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestBenchmarkSpanNameNormalizesWhitespace(t *testing.T) {
+	got := benchmarkSpanName("Go lang", "content\tbased\nrouter", "pi\u00a0agent")
+	want := "benchmark-Go_lang-content_based_router-pi_agent"
+	if got != want {
+		t.Fatalf("benchmarkSpanName() = %q, want %q", got, want)
+	}
+}
+
 func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: time.Second}, exporter, true)
 
-	benchmark := tracer.StartBenchmarkSpan("claim-check", "pi", "/tmp/skills")
+	benchmark := tracer.StartBenchmarkSpan("go", "claim-check", "pi", "/tmp/skills")
 	benchmark.AddModelUsage([]shared.ModelUsage{
 		{Model: "model-b", Input: 2, Output: 3, CacheRead: 5, CacheWrite: 7},
 		{Model: "model-a", Input: 11, Output: 13, CacheRead: 17, CacheWrite: 19},
@@ -102,7 +110,7 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 	for _, current := range spans {
 		byName[current.Name] = current
 	}
-	root := byName["benchmark"]
+	root := byName["benchmark-go-claim-check-pi"]
 	llm := byName["llm"]
 	if root.Parent.IsValid() {
 		t.Fatalf("benchmark unexpectedly has parent %s", root.Parent.SpanID())
@@ -161,10 +169,11 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 	})
 
 	assertAttributes(t, root.Attributes, map[string]string{
-		openInferenceSpanKind: "AGENT",
-		"token_bench.task":    "claim-check",
-		"token_bench.harness": "pi",
-		"token_bench.skills":  "/tmp/skills",
+		openInferenceSpanKind:  "AGENT",
+		"token_bench.language": "go",
+		"token_bench.task":     "claim-check",
+		"token_bench.harness":  "pi",
+		"token_bench.skills":   "/tmp/skills",
 	})
 	assertAttributes(t, llm.Attributes, map[string]string{
 		openInferenceSpanKind: "LLM",
@@ -210,7 +219,7 @@ func TestForceFlushExportsCompletedSpansBeforeShutdown(t *testing.T) {
 	exporter := &retainingExporter{}
 	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: time.Second}, exporter, false)
 
-	benchmark := tracer.StartBenchmarkSpan("task", "claude", "")
+	benchmark := tracer.StartBenchmarkSpan("go", "task", "claude", "")
 	turn := benchmark.StartTurn()
 	tool := turn.StartBashToolSpan()
 	tool.SetInput("go test ./...")
@@ -232,7 +241,7 @@ func TestForceFlushExportsCompletedSpansBeforeShutdown(t *testing.T) {
 			t.Errorf("span %q status is %s, want OK", current.Name, current.Status.Code)
 		}
 	}
-	root, llm, bash := byName["benchmark"], byName["llm"], byName["bash"]
+	root, llm, bash := byName["benchmark-go-task-claude"], byName["llm"], byName["bash"]
 	if llm.Parent.SpanID() != root.SpanContext.SpanID() || bash.Parent.SpanID() != llm.SpanContext.SpanID() {
 		t.Fatalf("spans do not preserve their hierarchy: %+v", spans)
 	}
@@ -244,7 +253,7 @@ func TestForceFlushExportsCompletedSpansBeforeShutdown(t *testing.T) {
 func TestShutdownExportsFinalPartialBatchAndWaits(t *testing.T) {
 	exporter := newBlockingExporter()
 	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: time.Second}, exporter, false)
-	tracer.StartBenchmarkSpan("task", "claude", "").End()
+	tracer.StartBenchmarkSpan("go", "task", "claude", "").End()
 
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- tracer.Shutdown() }()
@@ -274,14 +283,14 @@ func TestBatchQueueBlocksInsteadOfDroppingSpans(t *testing.T) {
 	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: 5 * time.Second}, exporter, false)
 
 	for range 512 {
-		tracer.StartBenchmarkSpan("task", "claude", "").End()
+		tracer.StartBenchmarkSpan("go", "task", "claude", "").End()
 	}
 	awaitSignal(t, exporter.started, "full batch did not start exporting")
 	for range 2048 {
-		tracer.StartBenchmarkSpan("task", "claude", "").End()
+		tracer.StartBenchmarkSpan("go", "task", "claude", "").End()
 	}
 
-	last := tracer.StartBenchmarkSpan("task", "claude", "")
+	last := tracer.StartBenchmarkSpan("go", "task", "claude", "")
 	endDone := make(chan struct{})
 	go func() {
 		last.End()
@@ -310,7 +319,7 @@ func TestBatchQueueBlocksInsteadOfDroppingSpans(t *testing.T) {
 func TestSpanErrorStatusIsExported(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: time.Second}, exporter, true)
-	benchmark := tracer.StartBenchmarkSpan("task", "claude", "")
+	benchmark := tracer.StartBenchmarkSpan("go", "task", "claude", "")
 	benchmark.SetError("validation failed")
 	benchmark.End()
 

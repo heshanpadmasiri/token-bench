@@ -17,7 +17,10 @@ import (
 	"token-bench/tracing"
 )
 
-const defaultPhoenixTestImage = "arizephoenix/phoenix:19.4.0"
+const (
+	defaultPhoenixTestImage      = "arizephoenix/phoenix:19.4.0"
+	integrationBenchmarkSpanName = "benchmark-test-language-integration-test-test-harness"
+)
 
 func TestPhoenixExportIntegration(t *testing.T) {
 	collectorEndpoint := strings.TrimSpace(os.Getenv("PHOENIX_TEST_ENDPOINT"))
@@ -53,7 +56,7 @@ func TestPhoenixExportIntegration(t *testing.T) {
 	t.Cleanup(func() {
 		_ = tracer.Shutdown()
 	})
-	benchmark := tracer.StartBenchmarkSpan("integration-test", "test-harness", "test-skill")
+	benchmark := tracer.StartBenchmarkSpan("test-language", "integration-test", "test-harness", "test-skill")
 
 	firstTurn := benchmark.StartTurn()
 	firstTurn.SetLLMInput("inspect the project and run its tests")
@@ -105,10 +108,10 @@ func TestPhoenixExportIntegration(t *testing.T) {
 			t.Errorf("span %q status is %q, want OK", span.Name, span.StatusCode)
 		}
 	}
-	if len(trace.Spans) != 10 || len(byName["benchmark"]) != 1 || len(byName["llm"]) != 2 || len(byName["llm.usage"]) != 2 {
+	if len(trace.Spans) != 10 || len(byName[integrationBenchmarkSpanName]) != 1 || len(byName["llm"]) != 2 || len(byName["llm.usage"]) != 2 {
 		t.Fatalf("Phoenix trace did not contain the benchmark, LLM turns, and usage summaries: %+v", trace.Spans)
 	}
-	root := byName["benchmark"][0]
+	root := byName[integrationBenchmarkSpanName][0]
 	if root.SpanKind != "AGENT" || spanParentID(root) != "" {
 		t.Fatalf("unexpected benchmark span: %+v", root)
 	}
@@ -360,7 +363,7 @@ func isCompleteIntegrationTrace(trace phoenixTrace) bool {
 	for _, span := range trace.Spans {
 		counts[span.Name]++
 	}
-	if counts["benchmark"] != 1 || counts["llm"] != 2 || counts["llm.usage"] != 2 {
+	if counts[integrationBenchmarkSpanName] != 1 || counts["llm"] != 2 || counts["llm.usage"] != 2 {
 		return false
 	}
 	for _, name := range []string{"search", "bash", "edit", "write", "read"} {

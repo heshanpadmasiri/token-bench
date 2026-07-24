@@ -176,7 +176,7 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 	result.ThinkingBudget = agent.ThinkingBudget()
 	var benchmark tracing.BenchmarkSpan
 	if traceProvider != nil {
-		benchmark = traceProvider.StartBenchmarkSpan(definition.Name, current.Harness, current.SkillsDir)
+		benchmark = traceProvider.StartBenchmarkSpan(current.Language, definition.Name, current.Harness, current.SkillsDir)
 		defer func() {
 			if result.Passed && result.Error == "" {
 				benchmark.SetOK()

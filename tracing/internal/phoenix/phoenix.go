@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -84,14 +85,27 @@ func newTracer(config Config, exporter sdktrace.SpanExporter, synchronous bool) 
 	}
 }
 
-func (t *tracer) StartBenchmarkSpan(task, harness, skills string) shared.BenchmarkSpan {
-	ctx, root := t.tracer.Start(context.Background(), "benchmark", oteltrace.WithAttributes(
+func (t *tracer) StartBenchmarkSpan(language, task, harness, skills string) shared.BenchmarkSpan {
+	ctx, root := t.tracer.Start(context.Background(), benchmarkSpanName(language, task, harness), oteltrace.WithAttributes(
 		attribute.String(openInferenceSpanKind, "AGENT"),
+		attribute.String("token_bench.language", language),
 		attribute.String("token_bench.task", task),
 		attribute.String("token_bench.harness", harness),
 		attribute.String("token_bench.skills", skills),
 	))
 	return &benchmarkSpan{span: span{span: root}, context: ctx, tracer: t.tracer}
+}
+
+func benchmarkSpanName(language, task, harness string) string {
+	normalize := func(value string) string {
+		return strings.Map(func(character rune) rune {
+			if unicode.IsSpace(character) {
+				return '_'
+			}
+			return character
+		}, value)
+	}
+	return fmt.Sprintf("benchmark-%s-%s-%s", normalize(language), normalize(task), normalize(harness))
 }
 
 func (t *tracer) Shutdown() error {
