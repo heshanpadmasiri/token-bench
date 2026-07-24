@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -17,14 +16,11 @@ import (
 
 type span struct {
 	span      oteltrace.Span
-	once      sync.Once
-	mu        sync.Mutex
 	statusSet bool
+	ended     bool
 }
 
 func (s *span) SetOK() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.statusSet {
 		return
 	}
@@ -33,8 +29,6 @@ func (s *span) SetOK() {
 }
 
 func (s *span) SetError(description string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.statusSet {
 		return
 	}
@@ -46,10 +40,12 @@ func (s *span) SetError(description string) {
 }
 
 func (s *span) End() {
-	s.once.Do(func() {
-		s.SetOK()
-		s.span.End()
-	})
+	if s.ended {
+		return
+	}
+	s.SetOK()
+	s.span.End()
+	s.ended = true
 }
 
 type benchmarkSpan struct {
@@ -57,8 +53,6 @@ type benchmarkSpan struct {
 	context context.Context
 	tracer  oteltrace.Tracer
 
-	usageMu    sync.Mutex
-	usageOnce  sync.Once
 	usageEnded bool
 	usage      map[string]shared.ModelUsage
 }
@@ -71,8 +65,6 @@ func (b *benchmarkSpan) StartTurn() shared.TurnSpan {
 }
 
 func (b *benchmarkSpan) AddModelUsage(usages []shared.ModelUsage) {
-	b.usageMu.Lock()
-	defer b.usageMu.Unlock()
 	if b.usageEnded {
 		return
 	}
@@ -94,14 +86,12 @@ func (b *benchmarkSpan) AddModelUsage(usages []shared.ModelUsage) {
 }
 
 func (b *benchmarkSpan) End() {
-	b.usageOnce.Do(func() {
-		b.usageMu.Lock()
+	if !b.usageEnded {
 		b.usageEnded = true
 		usages := make([]shared.ModelUsage, 0, len(b.usage))
 		for _, usage := range b.usage {
 			usages = append(usages, usage)
 		}
-		b.usageMu.Unlock()
 
 		sort.Slice(usages, func(i, j int) bool { return usages[i].Model < usages[j].Model })
 		for _, usage := range usages {
@@ -117,7 +107,7 @@ func (b *benchmarkSpan) End() {
 			))
 			(&span{span: child}).End()
 		}
-	})
+	}
 	b.span.End()
 }
 

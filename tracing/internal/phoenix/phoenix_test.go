@@ -3,6 +3,7 @@ package phoenix
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -205,7 +206,7 @@ func TestTracerBuildsOpenInferenceHierarchy(t *testing.T) {
 	}
 }
 
-func TestProductionExporterFlushesCompleteHierarchyParentFirst(t *testing.T) {
+func TestForceFlushExportsCompletedSpansBeforeShutdown(t *testing.T) {
 	exporter := &retainingExporter{}
 	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: time.Second}, exporter, false)
 
@@ -217,26 +218,92 @@ func TestProductionExporterFlushesCompleteHierarchyParentFirst(t *testing.T) {
 	turn.End()
 	benchmark.End()
 
-	if spans := exporter.spans; len(spans) != 0 {
-		t.Fatalf("exported %d spans before shutdown", len(spans))
+	if err := tracer.provider.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	spans := exporter.getSpans()
+	if len(spans) != 3 {
+		t.Fatalf("got %d spans, want 3", len(spans))
+	}
+	byName := make(map[string]tracetest.SpanStub, len(spans))
+	for _, current := range spans {
+		byName[current.Name] = current
+		if current.Status.Code != codes.Ok {
+			t.Errorf("span %q status is %s, want OK", current.Name, current.Status.Code)
+		}
+	}
+	root, llm, bash := byName["benchmark"], byName["llm"], byName["bash"]
+	if llm.Parent.SpanID() != root.SpanContext.SpanID() || bash.Parent.SpanID() != llm.SpanContext.SpanID() {
+		t.Fatalf("spans do not preserve their hierarchy: %+v", spans)
 	}
 	if err := tracer.Shutdown(); err != nil {
 		t.Fatal(err)
 	}
-	spans := exporter.spans
-	if len(spans) != 3 {
-		t.Fatalf("got %d spans, want 3", len(spans))
+}
+
+func TestShutdownExportsFinalPartialBatchAndWaits(t *testing.T) {
+	exporter := newBlockingExporter()
+	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: time.Second}, exporter, false)
+	tracer.StartBenchmarkSpan("task", "claude", "").End()
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- tracer.Shutdown() }()
+	awaitSignal(t, exporter.started, "export did not start during shutdown")
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned before export finished: %v", err)
+	case <-time.After(100 * time.Millisecond):
 	}
-	for index, name := range []string{"benchmark", "llm", "bash"} {
-		if spans[index].Name != name {
-			t.Fatalf("span %d is %q, want %q", index, spans[index].Name, name)
+
+	close(exporter.release)
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatal(err)
 		}
-		if spans[index].Status.Code != codes.Ok {
-			t.Errorf("span %q status is %s, want OK", name, spans[index].Status.Code)
-		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not return after export finished")
 	}
-	if spans[1].Parent.SpanID() != spans[0].SpanContext.SpanID() || spans[2].Parent.SpanID() != spans[1].SpanContext.SpanID() {
-		t.Fatalf("spans are not nested parent-first: %+v", spans)
+	if got := len(exporter.getSpans()); got != 1 {
+		t.Fatalf("exported %d spans, want 1", got)
+	}
+}
+
+func TestBatchQueueBlocksInsteadOfDroppingSpans(t *testing.T) {
+	exporter := newBlockingExporter()
+	tracer := newTracer(Config{ProjectName: "trace-test", ExportTimeout: 5 * time.Second}, exporter, false)
+
+	for range 512 {
+		tracer.StartBenchmarkSpan("task", "claude", "").End()
+	}
+	awaitSignal(t, exporter.started, "full batch did not start exporting")
+	for range 2048 {
+		tracer.StartBenchmarkSpan("task", "claude", "").End()
+	}
+
+	last := tracer.StartBenchmarkSpan("task", "claude", "")
+	endDone := make(chan struct{})
+	go func() {
+		last.End()
+		close(endDone)
+	}()
+	select {
+	case <-endDone:
+		t.Fatal("End returned while the batch queue was full")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(exporter.release)
+	select {
+	case <-endDone:
+	case <-time.After(time.Second):
+		t.Fatal("End remained blocked after queue space became available")
+	}
+	if err := tracer.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(exporter.getSpans()), 2561; got != want {
+		t.Fatalf("exported %d spans, want %d", got, want)
 	}
 }
 
@@ -256,14 +323,33 @@ func TestSpanErrorStatusIsExported(t *testing.T) {
 	}
 }
 
-func TestShutdownReturnsExportFailures(t *testing.T) {
+func TestPanicExporterPanicsWhenExportFails(t *testing.T) {
 	expected := errors.New("Phoenix unavailable")
-	tracer := newTracer(Config{ProjectName: "test", ExportTimeout: time.Second}, failingExporter{err: expected}, true)
-	span := tracer.StartBenchmarkSpan("task", "harness", "")
-	span.End()
-	if err := tracer.Shutdown(); !errors.Is(err, expected) {
-		t.Fatalf("Shutdown error %v does not contain %v", err, expected)
-	}
+	exporter := panicExporter{delegate: failingExporter{exportErr: expected}}
+	assertPanicsWith(t, expected, func() {
+		_ = exporter.ExportSpans(context.Background(), nil)
+	})
+}
+
+func TestPanicExporterPanicsWhenShutdownFails(t *testing.T) {
+	expected := errors.New("Phoenix shutdown failed")
+	exporter := panicExporter{delegate: failingExporter{shutdownErr: expected}}
+	assertPanicsWith(t, expected, func() {
+		_ = exporter.Shutdown(context.Background())
+	})
+}
+
+func assertPanicsWith(t *testing.T, expected error, action func()) {
+	t.Helper()
+	defer func() {
+		recovered := recover()
+		err, ok := recovered.(error)
+		if !ok || !errors.Is(err, expected) {
+			t.Fatalf("panic %v does not contain %v", recovered, expected)
+		}
+	}()
+	action()
+	t.Fatal("action did not panic")
 }
 
 func assertAttributes(t *testing.T, attributes []attribute.KeyValue, expected map[string]string) {
@@ -285,24 +371,64 @@ func attributeMap(attributes []attribute.KeyValue) map[string]string {
 }
 
 type retainingExporter struct {
+	mu    sync.Mutex
 	spans tracetest.SpanStubs
 }
 
 func (e *retainingExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.spans = append(e.spans, tracetest.SpanStubsFromReadOnlySpans(spans)...)
 	return nil
 }
 
 func (*retainingExporter) Shutdown(context.Context) error { return nil }
 
+func (e *retainingExporter) getSpans() tracetest.SpanStubs {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append(tracetest.SpanStubs(nil), e.spans...)
+}
+
+type blockingExporter struct {
+	retainingExporter
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingExporter() *blockingExporter {
+	return &blockingExporter{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (e *blockingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	e.once.Do(func() { close(e.started) })
+	select {
+	case <-e.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return e.retainingExporter.ExportSpans(ctx, spans)
+}
+
+func awaitSignal(t *testing.T, signal <-chan struct{}, failure string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal(failure)
+	}
+}
+
 type failingExporter struct {
-	err error
+	exportErr   error
+	shutdownErr error
 }
 
 func (e failingExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {
-	return e.err
+	return e.exportErr
 }
 
-func (failingExporter) Shutdown(context.Context) error {
-	return nil
+func (e failingExporter) Shutdown(context.Context) error {
+	return e.shutdownErr
 }

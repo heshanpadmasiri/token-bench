@@ -2,13 +2,91 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"token-bench/harness"
 	benchresult "token-bench/result"
 )
+
+func TestDefaultSIGINTSkipsDeferredCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGINT process semantics differ on Windows")
+	}
+	if os.Getenv("TOKEN_BENCH_SIGINT_HELPER") == "1" {
+		marker := os.Getenv("TOKEN_BENCH_SIGINT_MARKER")
+		defer func() { _ = os.WriteFile(marker, []byte("cleanup ran"), 0o644) }()
+		if err := os.WriteFile(os.Getenv("TOKEN_BENCH_SIGINT_READY"), []byte("ready"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
+
+	directory := t.TempDir()
+	marker := filepath.Join(directory, "cleanup")
+	ready := filepath.Join(directory, "ready")
+	command := exec.Command(os.Args[0], "-test.run=^TestDefaultSIGINTSkipsDeferredCleanup$")
+	command.Env = append(os.Environ(),
+		"TOKEN_BENCH_SIGINT_HELPER=1",
+		"TOKEN_BENCH_SIGINT_MARKER="+marker,
+		"TOKEN_BENCH_SIGINT_READY="+ready,
+	)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- command.Wait() }()
+	finished := false
+	t.Cleanup(func() {
+		if !finished {
+			_ = command.Process.Kill()
+			<-waited
+		}
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-waited:
+			finished = true
+			t.Fatalf("helper exited before SIGINT: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("helper did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-waited:
+		finished = true
+		if err == nil {
+			t.Fatal("helper exited successfully after SIGINT")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("helper did not terminate immediately after SIGINT")
+	}
+	if content, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("deferred cleanup ran after SIGINT: %q", content)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
 
 func TestParseOptions(t *testing.T) {
 	parsed, err := parseOptions([]string{"content-based-router", "ballerina", "pi", "--n-runs=3", "--target=/tmp/token-bench", "--skills=/tmp/skills"})

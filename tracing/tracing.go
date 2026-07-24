@@ -30,7 +30,7 @@ type (
 		ProjectName string
 		// Headers contains optional OTLP request headers, such as Authorization.
 		Headers map[string]string
-		// ExportTimeout bounds exports and Shutdown. Zero defaults to ten seconds.
+		// ExportTimeout bounds each export attempt. Zero defaults to ten seconds.
 		ExportTimeout time.Duration
 	}
 )

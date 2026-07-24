@@ -50,6 +50,9 @@ func TestPhoenixExportIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		_ = tracer.Shutdown()
+	})
 	benchmark := tracer.StartBenchmarkSpan("integration-test", "test-harness", "test-skill")
 
 	firstTurn := benchmark.StartTurn()
@@ -87,11 +90,11 @@ func TestPhoenixExportIntegration(t *testing.T) {
 		{Model: "claude-haiku-4-5", Input: 50, Output: 10, CacheRead: 5, CacheWrite: 15},
 	})
 	benchmark.End()
-	if err := tracer.Shutdown(); err != nil {
-		t.Fatalf("flush trace to Phoenix: %v", err)
-	}
 
 	trace := waitForPhoenixTrace(t, apiEndpoint, project, headers)
+	if err := tracer.Shutdown(); err != nil {
+		t.Fatalf("shut down Phoenix tracer: %v", err)
+	}
 	if trace.TokenCountPrompt != 240 || trace.TokenCountCompletion != 30 || trace.TokenCountTotal != 270 {
 		t.Fatalf("unexpected Phoenix trace token counts: prompt=%d completion=%d total=%d", trace.TokenCountPrompt, trace.TokenCountCompletion, trace.TokenCountTotal)
 	}

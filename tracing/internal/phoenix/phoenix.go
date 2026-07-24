@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -36,12 +34,8 @@ type Config struct {
 }
 
 type tracer struct {
-	tracer          oteltrace.Tracer
-	provider        *sdktrace.TracerProvider
-	exporter        *recordingExporter
-	exportTimeout   time.Duration
-	shutdownOnce    sync.Once
-	shutdownFailure error
+	tracer   oteltrace.Tracer
+	provider *sdktrace.TracerProvider
 }
 
 // New creates an OTLP/HTTP tracer configured for Phoenix.
@@ -64,7 +58,7 @@ func New(config Config) (shared.Tracer, error) {
 }
 
 func newTracer(config Config, exporter sdktrace.SpanExporter, synchronous bool) *tracer {
-	recording := &recordingExporter{delegate: exporter, deferred: !synchronous}
+	wrapped := panicExporter{delegate: exporter}
 	res := resource.NewWithAttributes(
 		semconv.SchemaURL,
 		semconv.ServiceName(config.ProjectName),
@@ -72,16 +66,21 @@ func newTracer(config Config, exporter sdktrace.SpanExporter, synchronous bool) 
 	)
 	var processorOption sdktrace.TracerProviderOption
 	if synchronous {
-		processorOption = sdktrace.WithSyncer(recording)
+		processorOption = sdktrace.WithSyncer(wrapped)
 	} else {
-		processorOption = sdktrace.WithBatcher(recording, sdktrace.WithExportTimeout(config.ExportTimeout))
+		processorOption = sdktrace.WithBatcher(
+			wrapped,
+			sdktrace.WithMaxQueueSize(2048),
+			sdktrace.WithMaxExportBatchSize(512),
+			sdktrace.WithBatchTimeout(5*time.Second),
+			sdktrace.WithExportTimeout(config.ExportTimeout),
+			sdktrace.WithBlocking(),
+		)
 	}
 	provider := sdktrace.NewTracerProvider(sdktrace.WithResource(res), processorOption)
 	return &tracer{
-		tracer:        provider.Tracer(instrumentationName),
-		provider:      provider,
-		exporter:      recording,
-		exportTimeout: config.ExportTimeout,
+		tracer:   provider.Tracer(instrumentationName),
+		provider: provider,
 	}
 }
 
@@ -96,12 +95,10 @@ func (t *tracer) StartBenchmarkSpan(task, harness, skills string) shared.Benchma
 }
 
 func (t *tracer) Shutdown() error {
-	t.shutdownOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), t.exportTimeout)
-		defer cancel()
-		t.shutdownFailure = errors.Join(t.provider.Shutdown(ctx), t.exporter.exportError())
-	})
-	return t.shutdownFailure
+	if err := t.provider.Shutdown(context.Background()); err != nil {
+		panic(err)
+	}
+	return nil
 }
 
 func normalizeConfig(config Config) (Config, error) {
@@ -151,80 +148,20 @@ func cloneHeaders(headers map[string]string) map[string]string {
 	return cloned
 }
 
-type recordingExporter struct {
+type panicExporter struct {
 	delegate sdktrace.SpanExporter
-	deferred bool
-	mu       sync.Mutex
-	pending  []sdktrace.ReadOnlySpan
-	failures []error
 }
 
-func (e *recordingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
-	if e.deferred {
-		e.mu.Lock()
-		e.pending = append(e.pending, spans...)
-		e.mu.Unlock()
-		return nil
+func (e panicExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	if err := e.delegate.ExportSpans(ctx, spans); err != nil {
+		panic(err)
 	}
-	return e.export(ctx, spans)
+	return nil
 }
 
-func (e *recordingExporter) Shutdown(ctx context.Context) error {
-	e.mu.Lock()
-	pending := append([]sdktrace.ReadOnlySpan(nil), e.pending...)
-	e.pending = nil
-	e.mu.Unlock()
-
-	var exportErr error
-	if len(pending) != 0 {
-		sortParentFirst(pending)
-		exportErr = e.export(ctx, pending)
+func (e panicExporter) Shutdown(ctx context.Context) error {
+	if err := e.delegate.Shutdown(ctx); err != nil {
+		panic(err)
 	}
-	return errors.Join(exportErr, e.delegate.Shutdown(ctx))
-}
-
-func (e *recordingExporter) export(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
-	err := e.delegate.ExportSpans(ctx, spans)
-	if err != nil {
-		e.mu.Lock()
-		e.failures = append(e.failures, err)
-		e.mu.Unlock()
-	}
-	return err
-}
-
-func sortParentFirst(spans []sdktrace.ReadOnlySpan) {
-	byID := make(map[oteltrace.SpanID]sdktrace.ReadOnlySpan, len(spans))
-	for _, current := range spans {
-		byID[current.SpanContext().SpanID()] = current
-	}
-	depths := make(map[oteltrace.SpanID]int, len(spans))
-	var depth func(sdktrace.ReadOnlySpan) int
-	depth = func(current sdktrace.ReadOnlySpan) int {
-		id := current.SpanContext().SpanID()
-		if value, ok := depths[id]; ok {
-			return value
-		}
-		parent, ok := byID[current.Parent().SpanID()]
-		if !ok {
-			depths[id] = 0
-			return 0
-		}
-		value := depth(parent) + 1
-		depths[id] = value
-		return value
-	}
-	sort.SliceStable(spans, func(left, right int) bool {
-		leftDepth, rightDepth := depth(spans[left]), depth(spans[right])
-		if leftDepth != rightDepth {
-			return leftDepth < rightDepth
-		}
-		return spans[left].StartTime().Before(spans[right].StartTime())
-	})
-}
-
-func (e *recordingExporter) exportError() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return errors.Join(e.failures...)
+	return nil
 }
