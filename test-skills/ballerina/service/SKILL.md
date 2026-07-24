@@ -1,37 +1,81 @@
 ---
 name: service
-description: Use this when user asks you to create a HTTP service or REST end point.
+description: Use this when user asks you to create a service.
 ---
 
-First identify the payload shape for each endpoint based user input. If you expect addition fields use a open record else use close record. Default to open records
-Similarly try to define response shape. Default to close records
+- IMPORTANT: don't use http:Request directly anywhere in the source code
+First identify the shape of data you should receive from outside. Also determine the expected shape of the result. For inputs define `readonly` open records and for result define closed records 
+
 
 ```ballerina
-type CloseRecordPayload readonly & record {|
-  $body
-|}
 
-type OpenRecordPayload readonly & record {
-  $body
+import ballerina/http;
+type Data readonly & record {
+  UserId string
+  Name string
+};
+
+type Response record {|
+  DataofBirth string
+|};
+
+service /dob on new http:Listener(8080) {
+  // $rest-operation on $base-path/$rest-operation
+  isolated resource function post find(request Data) Response|error {
+    // do something
+    Response r = {...};
+    return r;
+  }
 }
 ```
-Then define service end points as fallows
+
+Ballerina runtime will validate payload can match the given shape you don't need to manually validate that.
+
+### Path parameters
+```ballerina
+import ballerina/http;
+type Response record {|
+  DataofBirth string
+|};
+
+service /dob on new http:Listener(8080) {
+  // $rest-operation on $base-path/$rest-operation
+  isolated resource function get /[string UserId]/[string name]() Response|error {
+    // do something
+    string dob = findDob(userId, name)
+    Response r = {...};
+    return r;
+  }
+}
+```
+Similar to payload runtime will validate you can bind the path parameter to the given type.
+
+### Header parameters
+
+If you need to access a specific http header parameter use `@http:header` annotation
 
 ```ballerina
 import ballerina/http;
-service $base-path on new http:Listener($port) {
-  // $rest-operation on $base-path/$rest-operation
-  resource function $rest-operation(get|post|put) $endpoint($payloadtype request) $responsetype|error {
-    $body
-  }
+import ballerina/mime;
 
-  // you can also get path parameters
-  resource function $rest-operation(get|post|put) foo/bar/[ty param]($payloadtype request) $responsetype|error {
-    $body
-  }
+type Album readonly & record {|
+    string title;
+    string artist;
+|};
+
+table<Album> key(title) albums = table [
+    {title: "Blue Train", artist: "John Coltrane"},
+    {title: "Jeru", artist: "Gerry Mulligan"}
+];
+
+service / on new http:Listener(9090) {
+
+    // The `accept` argument with `@http:Header` annotation takes the value of the `Accept` request header.
+    resource function get albums(@http:Header string accept) returns Album[]|http:NotAcceptable {
+        if !string:equalsIgnoreCaseAscii(accept, mime:APPLICATION_JSON) {
+            return http:NOT_ACCEPTABLE;
+        }
+        return albums.toArray();
+    }
 }
 ```
-
-IMPORTANT: when you define a `$payloadtype` like this runtime will validate payload no need to do it ourself.
-
-If you want to allow concurrent invocations for resource function you must declare them as isolated and parameters to be immutable. Also all the functions you call must be isolated as well (same restrictions)
