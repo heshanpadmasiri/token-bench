@@ -20,3 +20,6 @@
 - Prefer using templates for manual string manipulations.
 - For each prompt/generated file have a dedicated prompt file instead instead of inlining it in the code
 - Each component (task, language, harness) should be independent from each other.
+
+## VCS
+- Use jj instead of git
