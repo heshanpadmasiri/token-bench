@@ -39,6 +39,10 @@ func TestStreamingProcessSupportsMultipleMessagesAndPersistsLogs(t *testing.T) {
 	binDir := t.TempDir()
 	claudePath := filepath.Join(binDir, "claude")
 	script := `#!/bin/sh
+if [ "$CLAUDE_CODE_DISABLE_AUTO_MEMORY" != "1" ]; then
+  printf '%s\n' 'auto-memory was not disabled' >&2
+  exit 42
+fi
 turn=0
 while IFS= read -r message; do
   turn=$((turn + 1))

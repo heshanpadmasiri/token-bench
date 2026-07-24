@@ -164,6 +164,7 @@ func (c *claude) startProcess(executable, workingDir string, benchmark tracing.B
 
 	command := exec.Command(executable, c.startArguments()...)
 	command.Dir = workingDir
+	command.Env = append(os.Environ(), "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1")
 	command.Stderr = stderrFile
 	stdin, err := command.StdinPipe()
 	if err != nil {
