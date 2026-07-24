@@ -4,7 +4,11 @@ description: Use this when user asks you to create a service.
 ---
 
 - IMPORTANT: don't use http:Request directly anywhere in the source code
+- IMPORTANT: don't use `json` or `byte[]` as the payload type in service. Always explicitly define the record type for the payload
+- IMPORTANT: never try to manually parse the payload or validate it. Always explicitly define the shape of the input and let runtime validate it
+
 First identify the shape of data you should receive from outside. Also determine the expected shape of the result. For inputs define `readonly` open records and for result define closed records 
+  - Open records allow addition fields that can be accessed with `a.["fieldName"]` notation
 
 
 ```ballerina
@@ -23,6 +27,8 @@ service /dob on new http:Listener(8080) {
   // $rest-operation on $base-path/$rest-operation
   isolated resource function post find(request Data) Response|error {
     // do something
+    // var userId = request.UserId
+    // var someotherField = request["someotherField"]
     Response r = {...};
     return r;
   }
