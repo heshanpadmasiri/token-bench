@@ -73,8 +73,7 @@ func run(arguments []string) (exitCode int) {
 			return
 		}
 		if err := traceProvider.Shutdown(); err != nil {
-			fmt.Fprintln(os.Stderr, fmt.Errorf("shutdown tracing: %w", err))
-			exitCode = 1
+			fmt.Fprintln(os.Stderr, renderCLIError(fmt.Sprintf("Tracing error: %v", err)))
 		}
 	}()
 

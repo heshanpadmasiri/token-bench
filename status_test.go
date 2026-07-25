@@ -36,6 +36,13 @@ func TestStatusModelReplacesActivityWithFinalResults(t *testing.T) {
 	}
 }
 
+func TestRenderCLIErrorUsesRed(t *testing.T) {
+	rendered := renderCLIError("Tracing error: EOF")
+	if !strings.Contains(rendered, "Tracing error: EOF") || !strings.Contains(rendered, "\x1b[31m") {
+		t.Fatalf("error was not rendered in red: %q", rendered)
+	}
+}
+
 func TestStatusDisplayFinishesWithResults(t *testing.T) {
 	updates := make(chan string, 1)
 	var output bytes.Buffer

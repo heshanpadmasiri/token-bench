@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -21,9 +22,11 @@ import (
 )
 
 const (
-	defaultProjectName   = "token-bench"
-	defaultExportTimeout = 10 * time.Second
-	instrumentationName  = "token-bench/tracing/phoenix"
+	defaultProjectName    = "token-bench"
+	defaultExportTimeout  = 10 * time.Second
+	defaultExportAttempts = 3
+	defaultRetryDelay     = time.Second
+	instrumentationName   = "token-bench/tracing/phoenix"
 )
 
 // Config contains Phoenix exporter configuration supplied by the public package.
@@ -51,6 +54,9 @@ func New(config Config) (shared.Tracer, error) {
 		otlptracehttp.WithEndpointURL(normalized.Endpoint),
 		otlptracehttp.WithHeaders(normalized.Headers),
 		otlptracehttp.WithTimeout(normalized.ExportTimeout),
+		// reportingExporter owns retries so failures such as a bare EOF, which
+		// the OTLP exporter does not classify as retryable, are also retried.
+		otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: false}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Phoenix OTLP exporter: %w", err)
@@ -59,7 +65,11 @@ func New(config Config) (shared.Tracer, error) {
 }
 
 func newTracer(config Config, exporter sdktrace.SpanExporter, synchronous bool) *tracer {
-	wrapped := panicExporter{delegate: exporter}
+	wrapped := &reportingExporter{
+		delegate:    exporter,
+		maxAttempts: defaultExportAttempts,
+		retryDelay:  defaultRetryDelay,
+	}
 	res := resource.NewWithAttributes(
 		semconv.SchemaURL,
 		semconv.ServiceName(config.ProjectName),
@@ -162,20 +172,60 @@ func cloneHeaders(headers map[string]string) map[string]string {
 	return cloned
 }
 
-type panicExporter struct {
-	delegate sdktrace.SpanExporter
+// reportingExporter retries failed exports and retains the final error so it can
+// be reported during shutdown without crashing the batch processor goroutine.
+type reportingExporter struct {
+	delegate    sdktrace.SpanExporter
+	maxAttempts int
+	retryDelay  time.Duration
+
+	mu        sync.Mutex
+	exportErr error
 }
 
-func (e panicExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
-	if err := e.delegate.ExportSpans(ctx, spans); err != nil {
-		panic(err)
+func (e *reportingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	attempts := max(1, e.maxAttempts)
+	attempted := 0
+	var exportErr error
+retry:
+	for attempt := range attempts {
+		attempted++
+		exportErr = e.delegate.ExportSpans(ctx, spans)
+		if exportErr == nil {
+			return nil
+		}
+		if attempt+1 == attempts || ctx.Err() != nil {
+			break
+		}
+		delay := e.retryDelay * time.Duration(1<<attempt)
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			exportErr = errors.Join(exportErr, ctx.Err())
+			break retry
+		}
 	}
+
+	e.mu.Lock()
+	if e.exportErr == nil {
+		e.exportErr = fmt.Errorf("export traces after %d attempts: %w", attempted, exportErr)
+	}
+	e.mu.Unlock()
+	// The batch processor cannot return asynchronous errors to its caller. Keep
+	// the error for Shutdown instead of invoking OpenTelemetry's global handler.
 	return nil
 }
 
-func (e panicExporter) Shutdown(ctx context.Context) error {
-	if err := e.delegate.Shutdown(ctx); err != nil {
-		panic(err)
-	}
-	return nil
+func (e *reportingExporter) Shutdown(ctx context.Context) error {
+	shutdownErr := e.delegate.Shutdown(ctx)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return errors.Join(e.exportErr, shutdownErr)
 }

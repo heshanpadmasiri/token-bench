@@ -3,6 +3,7 @@ package phoenix
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -332,33 +333,48 @@ func TestSpanErrorStatusIsExported(t *testing.T) {
 	}
 }
 
-func TestPanicExporterPanicsWhenExportFails(t *testing.T) {
+func TestReportingExporterRetriesUntilExportSucceeds(t *testing.T) {
+	delegate := &flakyExporter{failures: 2, exportErr: errors.New("temporary failure")}
+	exporter := reportingExporter{delegate: delegate, maxAttempts: 3}
+	if err := exporter.ExportSpans(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if delegate.attempts != 3 {
+		t.Fatalf("made %d export attempts, want 3", delegate.attempts)
+	}
+	if err := exporter.Shutdown(context.Background()); err != nil {
+		t.Fatalf("successful retry was reported as an error: %v", err)
+	}
+}
+
+func TestReportingExporterReportsExhaustedExportDuringShutdown(t *testing.T) {
 	expected := errors.New("Phoenix unavailable")
-	exporter := panicExporter{delegate: failingExporter{exportErr: expected}}
-	assertPanicsWith(t, expected, func() {
-		_ = exporter.ExportSpans(context.Background(), nil)
-	})
+	delegate := &flakyExporter{failures: 3, exportErr: expected}
+	exporter := reportingExporter{delegate: delegate, maxAttempts: 3}
+	if err := exporter.ExportSpans(context.Background(), nil); err != nil {
+		t.Fatalf("ExportSpans returned asynchronous error: %v", err)
+	}
+	if delegate.attempts != 3 {
+		t.Fatalf("made %d export attempts, want 3", delegate.attempts)
+	}
+	if err := exporter.Shutdown(context.Background()); !errors.Is(err, expected) || !strings.Contains(err.Error(), "after 3 attempts") {
+		t.Fatalf("Shutdown error %v does not describe exhausted retries", err)
+	}
 }
 
-func TestPanicExporterPanicsWhenShutdownFails(t *testing.T) {
-	expected := errors.New("Phoenix shutdown failed")
-	exporter := panicExporter{delegate: failingExporter{shutdownErr: expected}}
-	assertPanicsWith(t, expected, func() {
-		_ = exporter.Shutdown(context.Background())
-	})
-}
-
-func assertPanicsWith(t *testing.T, expected error, action func()) {
-	t.Helper()
-	defer func() {
-		recovered := recover()
-		err, ok := recovered.(error)
-		if !ok || !errors.Is(err, expected) {
-			t.Fatalf("panic %v does not contain %v", recovered, expected)
-		}
-	}()
-	action()
-	t.Fatal("action did not panic")
+func TestReportingExporterJoinsExportAndShutdownErrors(t *testing.T) {
+	exportErr := errors.New("Phoenix unavailable")
+	shutdownErr := errors.New("Phoenix shutdown failed")
+	exporter := reportingExporter{
+		delegate:    failingExporter{exportErr: exportErr, shutdownErr: shutdownErr},
+		maxAttempts: 1,
+	}
+	if err := exporter.ExportSpans(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := exporter.Shutdown(context.Background()); !errors.Is(err, exportErr) || !errors.Is(err, shutdownErr) {
+		t.Fatalf("Shutdown error %v does not contain both failures", err)
+	}
 }
 
 func assertAttributes(t *testing.T, attributes []attribute.KeyValue, expected map[string]string) {
@@ -428,6 +444,22 @@ func awaitSignal(t *testing.T, signal <-chan struct{}, failure string) {
 		t.Fatal(failure)
 	}
 }
+
+type flakyExporter struct {
+	attempts  int
+	failures  int
+	exportErr error
+}
+
+func (e *flakyExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {
+	e.attempts++
+	if e.attempts <= e.failures {
+		return e.exportErr
+	}
+	return nil
+}
+
+func (*flakyExporter) Shutdown(context.Context) error { return nil }
 
 type failingExporter struct {
 	exportErr   error
