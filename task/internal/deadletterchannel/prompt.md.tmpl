@@ -2,7 +2,7 @@ Implement a RabbitMQ consumer using the Dead Letter Channel pattern.
 
 ## Broker
 
-RabbitMQ is already running at `{{.BrokerURL}}` and is owned by the benchmark. The necessary queues has already declared:
+RabbitMQ is already running at `{{.BrokerURL}}` and is owned by the benchmark. The necessary queues have already been declared:
 
 - Source queue: `{{.Queue}}`
 - Dead letter queue: `dead-letters`
@@ -26,6 +26,6 @@ For every delivery:
 - Also reject malformed messages or messages without a numeric `payload.amount`, with requeue disabled.
 - Use manual acknowledgements and keep consuming until the application is stopped.
 
-The benchmark populates the source queue before starting the application. Consume all existing messages. The benchmark will verify that the source queue is fully consumed and that rejected messages are present in the dead letter queue with RabbitMQ's `x-death` metadata.
+The benchmark populates the source queue before and during its checks. Keep consuming new messages for the lifetime of the application. The benchmark will verify that the source queue is fully consumed and that rejected messages are present in the dead letter queue with RabbitMQ's `x-death` metadata.
 
 The HTTP server is only used for readiness. Do not stop, kill, or otherwise modify the RabbitMQ container. Do not leave the application running when finished because the benchmark starts and stops it for checks.

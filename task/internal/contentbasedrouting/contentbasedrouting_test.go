@@ -25,6 +25,14 @@ func TestPromptIncludesBackendsSchemaAndSamples(t *testing.T) {
 	}
 }
 
+func TestNewRejectsInvalidPorts(t *testing.T) {
+	for _, ports := range [][]int{{19080}, {19080, 19081, 0}, {19080, 19081, 65536}} {
+		if _, err := New(ports).Prompt(); err == nil {
+			t.Errorf("New(%v) did not reject invalid ports", ports)
+		}
+	}
+}
+
 func TestFeedbackAndValidation(t *testing.T) {
 	ports := testPorts(t, requiredPorts)
 	handle := New(ports)
@@ -33,6 +41,9 @@ func TestFeedbackAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cleanup() })
+	if _, err := handle.Setup(); err == nil {
+		t.Fatal("second Setup unexpectedly succeeded")
+	}
 	stopRouter := startRouter(t, ports)
 	t.Cleanup(stopRouter)
 
@@ -50,6 +61,13 @@ func TestFeedbackAndValidation(t *testing.T) {
 	if !passed {
 		t.Fatal("hidden validation failed")
 	}
+	stopRouter()
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("second cleanup failed: %v", err)
+	}
 }
 
 func startRouter(t *testing.T, ports []int) func() {
@@ -60,6 +78,10 @@ func startRouter(t *testing.T, ports []int) func() {
 	}
 	server := &http.Server{ReadHeaderTimeout: time.Second}
 	server.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/health" {
+			writer.WriteHeader(http.StatusOK)
+			return
+		}
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			http.Error(writer, err.Error(), http.StatusBadRequest)
@@ -92,12 +114,14 @@ func startRouter(t *testing.T, ports []int) func() {
 			return
 		}
 		outgoing.Header = request.Header.Clone()
+		removeHopHeaders(outgoing.Header)
 		response, err := http.DefaultClient.Do(outgoing)
 		if err != nil {
 			http.Error(writer, err.Error(), http.StatusBadGateway)
 			return
 		}
 		defer response.Body.Close()
+		removeHopHeaders(response.Header)
 		for name, values := range response.Header {
 			for _, value := range values {
 				writer.Header().Add(name, value)
@@ -111,6 +135,17 @@ func startRouter(t *testing.T, ports []int) func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = server.Shutdown(ctx)
+	}
+}
+
+func removeHopHeaders(header http.Header) {
+	for _, connection := range header.Values("Connection") {
+		for name := range strings.SplitSeq(connection, ",") {
+			header.Del(strings.TrimSpace(name))
+		}
+	}
+	for _, name := range []string{"Connection", "Proxy-Connection", "Keep-Alive", "Te", "Trailer", "Transfer-Encoding", "Upgrade"} {
+		header.Del(name)
 	}
 }
 

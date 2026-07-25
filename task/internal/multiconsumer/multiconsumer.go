@@ -13,7 +13,6 @@ import (
 	"math/big"
 	"net/http"
 	"os/exec"
-	"reflect"
 	"strings"
 	"sync"
 	"text/template"
@@ -23,6 +22,8 @@ import (
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
+
+	"token-bench/task/internal/jsoncompare"
 )
 
 const (
@@ -96,6 +97,7 @@ type check struct {
 	expectedRoute  fulfillmentType
 	expectedStatus int
 	repeat         int
+	blockDatabase  bool
 }
 
 type checkResult struct {
@@ -311,6 +313,12 @@ func (m *multiConsumer) Prompt() (string, error) {
 }
 
 func (m *multiConsumer) Feedback() (string, error) {
+	if err := m.ready(); err != nil {
+		return "", err
+	}
+	if feedback := m.checkHealth(); feedback != "" {
+		return feedback, nil
+	}
 	result, err := m.runChecks(context.Background(), feedbackChecks())
 	return result.feedback, err
 }
@@ -326,17 +334,25 @@ func feedbackChecks() []check {
 		{name: "pickup route", eventID: "feedback-pickup-73", expectedRoute: storePickup, expectedStatus: http.StatusAccepted, body: `{"eventId":"feedback-pickup-73","orderId":"ORD-2025-1043","occurredAt":"2025-03-08T10:17:05Z","customerId":"CUS-1940","fulfillmentType":"store_pickup","totalAmount":48.50,"currency":"GBP","storeId":"LON-017"}`},
 		{name: "digital duplicate is idempotent", eventID: "feedback-digital-88", expectedRoute: digital, expectedStatus: http.StatusAccepted, repeat: 2, body: `{"eventId":"feedback-digital-88","orderId":"ORD-2025-1044","occurredAt":"2025-03-08T10:20:11Z","customerId":"CUS-7342","fulfillmentType":"digital","totalAmount":19.99,"currency":"EUR","deliveryEmail":"buyer@example.test"}`},
 		{name: "unknown route rejected", eventID: "feedback-unknown", expectedStatus: http.StatusBadRequest, body: `{"eventId":"feedback-unknown","orderId":"ORD-X","occurredAt":"2025-03-08T10:20:11Z","customerId":"CUS-X","fulfillmentType":"drone","totalAmount":1,"currency":"USD"}`},
+		{name: "invalid timestamp rejected", eventID: "feedback-time", expectedStatus: http.StatusBadRequest, body: `{"eventId":"feedback-time","orderId":"ORD-X","occurredAt":"yesterday","customerId":"CUS-X","fulfillmentType":"shipment","totalAmount":1,"currency":"USD"}`},
+		{name: "negative amount rejected", eventID: "feedback-negative", expectedStatus: http.StatusBadRequest, body: `{"eventId":"feedback-negative","orderId":"ORD-X","occurredAt":"2025-01-01T00:00:00Z","customerId":"CUS-X","fulfillmentType":"digital","totalAmount":-0.01,"currency":"USD"}`},
+		{name: "missing event ID rejected", expectedStatus: http.StatusBadRequest, body: `{"orderId":"ORD-X","occurredAt":"2025-01-01T00:00:00Z","customerId":"CUS-X","fulfillmentType":"pickup","totalAmount":1,"currency":"USD"}`},
 		{name: "malformed JSON rejected", expectedStatus: http.StatusBadRequest, body: `{"eventId":"feedback-malformed"`},
+		{name: "trailing JSON rejected", eventID: "feedback-trailing", expectedStatus: http.StatusBadRequest, body: `{"eventId":"feedback-trailing","orderId":"ORD-X","occurredAt":"2025-01-01T00:00:00Z","customerId":"CUS-X","fulfillmentType":"shipment","totalAmount":1,"currency":"USD"} {}`},
 	}
 }
 
 func validationChecks() []check {
 	return []check{
-		{name: "hidden digital route", eventID: "hidden-digital-19", expectedRoute: digital, expectedStatus: http.StatusAccepted, body: `{"currency":"JPY","totalAmount":2400,"fulfillmentType":"digital","customerId":"CUS-H19","occurredAt":"2026-01-19T23:41:02+09:00","orderId":"ORD-H19","eventId":"hidden-digital-19","license":{"seats":3}}`},
+		{name: "hidden digital route", eventID: "hidden-digital-19", expectedRoute: digital, expectedStatus: http.StatusAccepted, body: `{"currency":"JPY","totalAmount":2.4e3,"fulfillmentType":"digital","customerId":"CUS-H19","occurredAt":"2026-01-19T23:41:02+09:00","orderId":"ORD-H19","eventId":"hidden-digital-19","license":{"seats":3}}`},
 		{name: "hidden shipment duplicate", eventID: "hidden-shipment-42", expectedRoute: shipment, expectedStatus: http.StatusAccepted, repeat: 2, body: `{"eventId":"hidden-shipment-42","orderId":"ORD-H42","occurredAt":"2024-12-31T23:59:59Z","customerId":"CUS-H42","fulfillmentType":"shipment","totalAmount":0,"currency":"AUD","fragile":true}`},
 		{name: "hidden pickup route", eventID: "hidden-pickup-7", expectedRoute: storePickup, expectedStatus: http.StatusAccepted, body: `{"eventId":"hidden-pickup-7","orderId":"ORD-H7","occurredAt":"2025-06-01T07:30:00Z","customerId":"CUS-H7","fulfillmentType":"store_pickup","totalAmount":7.05,"currency":"CAD","storeId":"YVR-2"}`},
+		{name: "hidden database retry", eventID: "hidden-retry-31", expectedRoute: digital, expectedStatus: http.StatusAccepted, blockDatabase: true, body: `{"eventId":"hidden-retry-31","orderId":"ORD-H31","occurredAt":"2025-09-11T11:12:13Z","customerId":"CUS-H31","fulfillmentType":"digital","totalAmount":31,"currency":"NZD"}`},
 		{name: "hidden lowercase currency rejected", eventID: "hidden-currency", expectedStatus: http.StatusBadRequest, body: `{"eventId":"hidden-currency","orderId":"ORD-X","occurredAt":"2025-01-01T00:00:00Z","customerId":"CUS-X","fulfillmentType":"shipment","totalAmount":1,"currency":"usd"}`},
 		{name: "hidden nonnumeric amount rejected", eventID: "hidden-amount", expectedStatus: http.StatusBadRequest, body: `{"eventId":"hidden-amount","orderId":"ORD-X","occurredAt":"2025-01-01T00:00:00Z","customerId":"CUS-X","fulfillmentType":"digital","totalAmount":"1.00","currency":"USD"}`},
+		{name: "hidden non-object rejected", expectedStatus: http.StatusBadRequest, body: `[]`},
+		{name: "hidden empty customer rejected", eventID: "hidden-customer", expectedStatus: http.StatusBadRequest, body: `{"eventId":"hidden-customer","orderId":"ORD-X","occurredAt":"2025-01-01T00:00:00Z","customerId":"","fulfillmentType":"shipment","totalAmount":1,"currency":"USD"}`},
+		{name: "hidden non-ASCII currency rejected", eventID: "hidden-ascii", expectedStatus: http.StatusBadRequest, body: `{"eventId":"hidden-ascii","orderId":"ORD-X","occurredAt":"2025-01-01T00:00:00Z","customerId":"CUS-X","fulfillmentType":"shipment","totalAmount":1,"currency":"ÅBC"}`},
 	}
 }
 
@@ -359,12 +375,29 @@ func (m *multiConsumer) runCheck(ctx context.Context, current check) (checkResul
 	if current.repeat == 0 {
 		current.repeat = 1
 	}
+	var blockedTransaction pgx.Tx
 	if current.eventID != "" {
 		for _, database := range m.databases {
 			if _, err := database.Exec(ctx, "DELETE FROM fulfillment_events WHERE event_id=$1", current.eventID); err != nil {
 				return checkResult{}, fmt.Errorf("reset event %s: %w", current.eventID, err)
 			}
 		}
+	}
+	if current.blockDatabase {
+		var err error
+		blockedTransaction, err = m.databases[current.expectedRoute].Begin(ctx)
+		if err != nil {
+			return checkResult{}, fmt.Errorf("begin database blocking transaction: %w", err)
+		}
+		if _, err := blockedTransaction.Exec(ctx, "LOCK TABLE fulfillment_events IN ACCESS EXCLUSIVE MODE"); err != nil {
+			_ = blockedTransaction.Rollback(context.Background())
+			return checkResult{}, fmt.Errorf("lock fulfillment table: %w", err)
+		}
+		defer func() {
+			if blockedTransaction != nil {
+				_ = blockedTransaction.Rollback(context.Background())
+			}
+		}()
 	}
 	before, err := m.topicOffsets(ctx)
 	if err != nil {
@@ -389,9 +422,10 @@ func (m *multiConsumer) runCheck(ctx context.Context, current check) (checkResul
 			return failure(current, fmt.Sprintf("expected HTTP %d, got HTTP %d with body %q", current.expectedStatus, response.StatusCode, responseBody)), nil
 		}
 		if current.expectedStatus == http.StatusAccepted {
-			expected := fmt.Sprintf(`{"status":"accepted","eventId":"%s"}`, current.eventID)
-			if string(responseBody) != expected || response.Header.Get("Content-Type") != "application/json" {
-				return failure(current, fmt.Sprintf("expected response %q with Content-Type application/json, got %q and %q", expected, responseBody, response.Header.Get("Content-Type"))), nil
+			expected := []byte(fmt.Sprintf(`{"status":"accepted","eventId":"%s"}`, current.eventID))
+			equal, compareErr := jsoncompare.Equal(expected, responseBody)
+			if compareErr != nil || !equal || !jsoncompare.IsJSONContentType(response.Header.Get("Content-Type")) {
+				return failure(current, fmt.Sprintf("expected JSON response %s with Content-Type application/json, got %q and %q (comparison error: %v)", expected, responseBody, response.Header.Get("Content-Type"), compareErr)), nil
 			}
 		}
 	}
@@ -401,6 +435,21 @@ func (m *multiConsumer) runCheck(ctx context.Context, current check) (checkResul
 	}
 	if result := m.waitForOffsets(ctx, current, before, expectedDelta); !result.passed {
 		return result, nil
+	}
+	if current.expectedRoute != "" {
+		if result, err := m.validateKafkaRecords(ctx, current, before[routeFor(current.expectedRoute).topic]); err != nil || !result.passed {
+			return result, err
+		}
+	}
+	if current.blockDatabase {
+		expectedCommit := before[routeFor(current.expectedRoute).topic] + int64(current.repeat)
+		if result := m.ensureOffsetUncommitted(ctx, current, expectedCommit); !result.passed {
+			return result, nil
+		}
+		if err := blockedTransaction.Rollback(ctx); err != nil {
+			return checkResult{}, fmt.Errorf("release fulfillment table lock: %w", err)
+		}
+		blockedTransaction = nil
 	}
 	if current.eventID == "" {
 		return checkResult{passed: true}, nil
@@ -417,7 +466,85 @@ func (m *multiConsumer) runCheck(ctx context.Context, current check) (checkResul
 		}
 		return checkResult{passed: true}, nil
 	}
-	return m.waitForDatabase(ctx, current)
+	result, err := m.waitForDatabase(ctx, current)
+	if err != nil || !result.passed {
+		return result, err
+	}
+	return m.waitForCommittedOffset(ctx, current, before[routeFor(current.expectedRoute).topic]+int64(current.repeat)), nil
+}
+
+func (m *multiConsumer) validateKafkaRecords(ctx context.Context, current check, startOffset int64) (checkResult, error) {
+	route := routeFor(current.expectedRoute)
+	observer, err := kgo.NewClient(
+		kgo.SeedBrokers(m.kafkaBroker()),
+		kgo.SASL(plain.Auth{User: kafkaUser, Pass: kafkaPassword}.AsMechanism()),
+		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{route.topic: {0: kgo.NewOffset().At(startOffset)}}),
+	)
+	if err != nil {
+		return checkResult{}, fmt.Errorf("create Kafka observer: %w", err)
+	}
+	defer observer.Close()
+	for observed := 0; observed < current.repeat; {
+		fetches := observer.PollRecords(ctx, current.repeat-observed)
+		if err := fetches.Err(); err != nil {
+			return failure(current, fmt.Sprintf("read Kafka record: %v", err)), nil
+		}
+		for iterator := fetches.RecordIter(); !iterator.Done(); {
+			record := iterator.Next()
+			if record.Topic != route.topic || record.Partition != 0 || record.Offset < startOffset {
+				continue
+			}
+			if string(record.Key) != current.eventID {
+				return failure(current, fmt.Sprintf("Kafka record key changed: expected %q, got %q", current.eventID, record.Key)), nil
+			}
+			if !bytes.Equal(record.Value, []byte(current.body)) {
+				return failure(current, fmt.Sprintf("Kafka record body changed: expected %q, got %q", current.body, record.Value)), nil
+			}
+			observed++
+		}
+	}
+	return checkResult{passed: true}, nil
+}
+
+func (m *multiConsumer) ensureOffsetUncommitted(ctx context.Context, current check, forbidden int64) checkResult {
+	deadline := time.NewTimer(6 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	topic := routeFor(current.expectedRoute).topic
+	for {
+		select {
+		case <-ctx.Done():
+			return failure(current, "timed out while checking offset commit behavior")
+		case <-deadline.C:
+			return checkResult{passed: true}
+		case <-ticker.C:
+			offsets, err := m.admin.FetchOffsets(ctx, consumerGroup)
+			if err != nil {
+				continue
+			}
+			if offset, ok := offsets.Lookup(topic, 0); ok && offset.Err == nil && offset.At >= forbidden {
+				return failure(current, "consumer committed the Kafka offset before the database operation succeeded")
+			}
+		}
+	}
+}
+
+func (m *multiConsumer) waitForCommittedOffset(ctx context.Context, current check, expected int64) checkResult {
+	topic := routeFor(current.expectedRoute).topic
+	for {
+		offsets, err := m.admin.FetchOffsets(ctx, consumerGroup)
+		if err == nil {
+			if offset, ok := offsets.Lookup(topic, 0); ok && offset.Err == nil && offset.At >= expected {
+				return checkResult{passed: true}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return failure(current, fmt.Sprintf("consumer group did not commit %s partition 0 through offset %d", topic, expected))
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func (m *multiConsumer) waitForOffsets(ctx context.Context, current check, before map[string]int64, expected map[string]int64) checkResult {
@@ -487,17 +614,17 @@ func (m *multiConsumer) waitForDatabase(ctx context.Context, current check) (che
 	if err != nil {
 		return checkResult{}, err
 	}
-	var expectedPayload, actualPayload any
-	if err := json.Unmarshal([]byte(current.body), &expectedPayload); err != nil {
-		return checkResult{}, err
-	}
-	if err := json.Unmarshal(stored.payload, &actualPayload); err != nil {
+	equal, err := jsoncompare.Equal([]byte(current.body), stored.payload)
+	if err != nil {
 		return failure(current, fmt.Sprintf("stored payload is invalid JSON: %v", err)), nil
 	}
-	if !reflect.DeepEqual(expectedPayload, actualPayload) {
+	if !equal {
 		return failure(current, fmt.Sprintf("stored payload changed: got %s", stored.payload)), nil
 	}
-	input := expectedPayload.(map[string]any)
+	var input map[string]any
+	if err := json.Unmarshal([]byte(current.body), &input); err != nil {
+		return checkResult{}, err
+	}
 	expectedTime, _ := time.Parse(time.RFC3339, input["occurredAt"].(string))
 	expectedAmount, expectedAmountOK := new(big.Rat).SetString(fmt.Sprint(input["totalAmount"]))
 	storedAmount, storedAmountOK := new(big.Rat).SetString(stored.totalAmount)
@@ -536,6 +663,19 @@ func readEvent(ctx context.Context, database *pgx.Conn, eventID string) (storedE
 	err := database.QueryRow(ctx, `SELECT event_id, order_id, occurred_at, customer_id, total_amount::text, currency, payload FROM fulfillment_events WHERE event_id=$1`, eventID).Scan(
 		&event.eventID, &event.orderID, &event.occurredAt, &event.customerID, &event.totalAmount, &event.currency, &event.payload)
 	return event, err
+}
+
+func (m *multiConsumer) checkHealth() string {
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(fmt.Sprintf("http://127.0.0.1:%d/health", m.applicationPort))
+	if err != nil {
+		return fmt.Sprintf("Check %q failed. Diagnosis: GET /health failed: %v", "application health", err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Sprintf("Check %q failed. Expected a 2xx response, got HTTP %d.", "application health", response.StatusCode)
+	}
+	return ""
 }
 
 func (m *multiConsumer) ready() error {

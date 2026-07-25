@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -30,16 +32,18 @@ const (
 var promptTemplate string
 
 type deadLetterChannel struct {
-	brokerPort    int
-	containerName string
-	connection    *amqp.Connection
-	channel       *amqp.Channel
-	initErr       error
+	applicationPort int
+	brokerPort      int
+	containerName   string
+	connection      *amqp.Connection
+	channel         *amqp.Channel
+	initErr         error
 }
 
-type testMessage struct {
-	MessageID string         `json:"messageId"`
-	Payload   map[string]any `json:"payload"`
+type queueMessage struct {
+	messageID string
+	body      []byte
+	rejected  bool
 }
 
 type checkResult struct {
@@ -72,7 +76,7 @@ func New(ports []int) *deadLetterChannel {
 			return handle
 		}
 	}
-	handle.brokerPort = ports[1]
+	handle.applicationPort, handle.brokerPort = ports[0], ports[1]
 	return handle
 }
 
@@ -93,11 +97,6 @@ func (d *deadLetterChannel) Setup() (func() error, error) {
 		return nil, fmt.Errorf("start RabbitMQ container: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	if err := d.connectAndConfigure(ctx); err != nil {
-		_ = d.cleanup()
-		return nil, err
-	}
-	messages := append(feedbackMessages(), validationMessages()...)
-	if err := d.publish(ctx, messages); err != nil {
 		_ = d.cleanup()
 		return nil, err
 	}
@@ -180,42 +179,49 @@ func (d *deadLetterChannel) Prompt() (string, error) {
 	return prompt.String(), nil
 }
 
-func feedbackMessages() []testMessage {
-	return []testMessage{
-		{MessageID: "message-1042", Payload: map[string]any{"amount": 42}},
-		{MessageID: "failed-73", Payload: map[string]any{"amount": -73, "items": []any{1, 2, 3}}},
-		{MessageID: "message-1043", Payload: map[string]any{"amount": 0}},
+func feedbackMessages() []queueMessage {
+	return []queueMessage{
+		{messageID: "message-1042", body: []byte(`{"messageId":"message-1042","payload":{"amount":42}}`)},
+		{messageID: "failed-73", body: []byte(`{"messageId":"failed-73","payload":{"amount":-73,"items":[1,2,3]}}`), rejected: true},
+		{messageID: "message-1043", body: []byte(`{"messageId":"message-1043","payload":{"amount":0.0}}`)},
+		{messageID: "feedback-malformed", body: []byte(`{"messageId":"feedback-malformed"`), rejected: true},
+		{messageID: "feedback-missing-amount", body: []byte(`{"messageId":"feedback-missing-amount","payload":{}}`), rejected: true},
+		{messageID: "feedback-string-amount", body: []byte(`{"messageId":"feedback-string-amount","payload":{"amount":"-1"}}`), rejected: true},
 	}
 }
 
-func validationMessages() []testMessage {
-	return []testMessage{
-		{MessageID: "hidden-success", Payload: map[string]any{"amount": 19.95, "hidden": true}},
-		{MessageID: "hidden-failure-1", Payload: map[string]any{"amount": -0.01, "note": "reject me"}},
-		{MessageID: "hidden-failure-2", Payload: map[string]any{"amount": -1042}},
+func validationMessages() []queueMessage {
+	return []queueMessage{
+		{messageID: "hidden-success", body: []byte(`{"payload":{"hidden":true,"amount":1.995e1},"messageId":"hidden-success"}`)},
+		{messageID: "hidden-failure-1", body: []byte(`{"messageId":"hidden-failure-1","payload":{"note":"reject me","amount":-1e-2}}`), rejected: true},
+		{messageID: "hidden-failure-2", body: []byte(`{"messageId":"hidden-failure-2","payload":{"amount":-1042.0}}`), rejected: true},
+		{messageID: "hidden-null-amount", body: []byte(`{"messageId":"hidden-null-amount","payload":{"amount":null}}`), rejected: true},
+		{messageID: "hidden-array", body: []byte(`[]`), rejected: true},
 	}
 }
 
 func (d *deadLetterChannel) Feedback() (string, error) {
-	result, err := d.runCheck(context.Background(), feedbackMessages(), 3)
+	if err := d.ready(); err != nil {
+		return "", err
+	}
+	if feedback := d.checkHealth(); feedback != "" {
+		return feedback, nil
+	}
+	result, err := d.runCheck(context.Background(), feedbackMessages())
 	return result.feedback, err
 }
 
 func (d *deadLetterChannel) Validation() (bool, error) {
-	result, err := d.runCheck(context.Background(), validationMessages(), 3)
+	result, err := d.runCheck(context.Background(), validationMessages())
 	return result.passed, err
 }
 
-func (d *deadLetterChannel) publish(ctx context.Context, messages []testMessage) error {
+func (d *deadLetterChannel) publish(ctx context.Context, messages []queueMessage) error {
 	confirmations := d.channel.NotifyPublish(make(chan amqp.Confirmation, len(messages)))
 	for _, message := range messages {
-		body, err := json.Marshal(message)
-		if err != nil {
-			return fmt.Errorf("encode test message: %w", err)
-		}
-		publishing := amqp.Publishing{ContentType: "application/json", DeliveryMode: amqp.Persistent, CorrelationId: message.MessageID, Body: body}
+		publishing := amqp.Publishing{ContentType: "application/json", DeliveryMode: amqp.Persistent, CorrelationId: message.messageID, Body: message.body}
 		if err := d.channel.PublishWithContext(ctx, "", mainQueue, false, false, publishing); err != nil {
-			return fmt.Errorf("publish %s to source queue: %w", message.MessageID, err)
+			return fmt.Errorf("publish %s to source queue: %w", message.messageID, err)
 		}
 	}
 	for range messages {
@@ -231,21 +237,24 @@ func (d *deadLetterChannel) publish(ctx context.Context, messages []testMessage)
 	return nil
 }
 
-func (d *deadLetterChannel) runCheck(parent context.Context, messages []testMessage, totalDeadLetters int) (checkResult, error) {
+func (d *deadLetterChannel) runCheck(parent context.Context, messages []queueMessage) (checkResult, error) {
 	if err := d.ready(); err != nil {
 		return checkResult{}, err
 	}
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
+	if err := d.resetQueues(ctx); err != nil {
+		return checkResult{}, err
+	}
 	expectedDeadLetters := make(map[string][]byte)
 	for _, message := range messages {
-		body, err := json.Marshal(message)
-		if err != nil {
-			return checkResult{}, fmt.Errorf("encode test message: %w", err)
+		if message.rejected {
+			expectedDeadLetters[message.messageID] = message.body
 		}
-		if amount, ok := numericAmount(message.Payload["amount"]); ok && amount < 0 {
-			expectedDeadLetters[message.MessageID] = body
-		}
+	}
+	totalDeadLetters := len(expectedDeadLetters)
+	if err := d.publish(ctx, messages); err != nil {
+		return checkResult{}, err
 	}
 
 	var sourceState, deadState amqp.Queue
@@ -314,6 +323,43 @@ func (d *deadLetterChannel) runCheck(parent context.Context, messages []testMess
 	return checkResult{passed: true}, nil
 }
 
+func (d *deadLetterChannel) resetQueues(ctx context.Context) error {
+	for {
+		if _, err := d.channel.QueuePurge(mainQueue, false); err != nil {
+			return fmt.Errorf("reset source queue: %w", err)
+		}
+		if _, err := d.channel.QueuePurge(deadLetterQueue, false); err != nil {
+			return fmt.Errorf("reset dead letter queue: %w", err)
+		}
+		states, err := d.queueStates(ctx)
+		if err != nil {
+			return err
+		}
+		if states[mainQueue].MessagesReady == 0 && states[mainQueue].MessagesUnacknowledged == 0 {
+			_, err := d.channel.QueuePurge(deadLetterQueue, false)
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait to reset queues: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (d *deadLetterChannel) checkHealth() string {
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(fmt.Sprintf("http://127.0.0.1:%d/health", d.applicationPort))
+	if err != nil {
+		return fmt.Sprintf("Check %q failed. Diagnosis: GET /health failed: %v", "consumer health", err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Sprintf("Check %q failed. Expected a 2xx response, got HTTP %d.", "consumer health", response.StatusCode)
+	}
+	return ""
+}
+
 func (d *deadLetterChannel) requeue(deliveries []amqp.Delivery) error {
 	var failures []error
 	for _, delivery := range deliveries {
@@ -338,17 +384,6 @@ func (d *deadLetterChannel) queueStates(ctx context.Context) (map[string]brokerQ
 		states[state.Name] = state
 	}
 	return states, nil
-}
-
-func numericAmount(value any) (float64, bool) {
-	switch amount := value.(type) {
-	case int:
-		return float64(amount), true
-	case float64:
-		return amount, true
-	default:
-		return 0, false
-	}
 }
 
 func (d *deadLetterChannel) ready() error {

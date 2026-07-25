@@ -45,6 +45,9 @@ func TestPostgreSQLFeedbackValidationAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cleanup() })
+	if _, err := handle.Setup(); err == nil {
+		t.Fatal("second Setup unexpectedly succeeded")
+	}
 	containerName := handle.containerName
 
 	var city string
@@ -76,14 +79,19 @@ func TestPostgreSQLFeedbackValidationAndCleanup(t *testing.T) {
 	if err := cleanup(); err != nil {
 		t.Fatal(err)
 	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("second cleanup failed: %v", err)
+	}
 	if err := exec.Command("docker", "inspect", containerName).Run(); err == nil {
 		t.Fatalf("PostgreSQL container %q was not removed", containerName)
 	}
 }
 
-func TestNewRejectsWrongPortCount(t *testing.T) {
-	if _, err := New([]int{19080}).Prompt(); err == nil {
-		t.Fatal("expected wrong port count to fail")
+func TestNewRejectsInvalidPorts(t *testing.T) {
+	for _, ports := range [][]int{{19080}, {19080, 19081, 0}, {19080, 19081, 65536}} {
+		if _, err := New(ports).Prompt(); err == nil {
+			t.Errorf("New(%v) did not reject invalid ports", ports)
+		}
 	}
 }
 
@@ -106,6 +114,11 @@ func startApplication(t *testing.T, applicationPort int, databaseURL, downstream
 		var message map[string]any
 		decoder := json.NewDecoder(request.Body)
 		if decoder.Decode(&message) != nil || message == nil {
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var trailing any
+		if !errors.Is(decoder.Decode(&trailing), io.EOF) {
 			writer.WriteHeader(http.StatusBadRequest)
 			return
 		}

@@ -22,6 +22,9 @@ func TestFeedbackAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cleanup() })
+	if _, err := handle.Setup(); err == nil {
+		t.Fatal("second Setup unexpectedly succeeded")
+	}
 	stopApplication := startApplication(t, ports)
 	t.Cleanup(stopApplication)
 
@@ -38,6 +41,13 @@ func TestFeedbackAndValidation(t *testing.T) {
 	}
 	if !passed {
 		t.Fatal("hidden validation failed")
+	}
+	stopApplication()
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("second cleanup failed: %v", err)
 	}
 }
 
@@ -94,9 +104,11 @@ func TestPromptIncludesBackendsAndExamples(t *testing.T) {
 	}
 }
 
-func TestNewRejectsWrongPortCount(t *testing.T) {
-	if _, err := New([]int{19080}).Prompt(); err == nil {
-		t.Fatal("expected wrong port count to fail")
+func TestNewRejectsInvalidPorts(t *testing.T) {
+	for _, ports := range [][]int{{19080}, {19080, 19081, 19082, 0}, {19080, 19081, 19082, 65536}} {
+		if _, err := New(ports).Prompt(); err == nil {
+			t.Errorf("New(%v) did not reject invalid ports", ports)
+		}
 	}
 }
 
@@ -142,6 +154,7 @@ func startApplication(t *testing.T, ports []int) func() {
 					return
 				}
 				outgoing.Header = request.Header.Clone()
+				removeHopHeaders(outgoing.Header)
 				response, err := http.DefaultClient.Do(outgoing)
 				if err != nil {
 					results <- result{err: err}
@@ -151,6 +164,9 @@ func startApplication(t *testing.T, ports []int) func() {
 				quote, err := io.ReadAll(response.Body)
 				if err == nil && (response.StatusCode < 200 || response.StatusCode >= 300) {
 					err = fmt.Errorf("backend returned %d", response.StatusCode)
+				}
+				if err == nil && !json.Valid(quote) {
+					err = fmt.Errorf("backend returned invalid JSON")
 				}
 				results <- result{quote: quote, err: err}
 			}(port)
@@ -176,6 +192,17 @@ func startApplication(t *testing.T, ports []int) func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = server.Shutdown(ctx)
+	}
+}
+
+func removeHopHeaders(header http.Header) {
+	for _, connection := range header.Values("Connection") {
+		for name := range strings.SplitSeq(connection, ",") {
+			header.Del(strings.TrimSpace(name))
+		}
+	}
+	for _, name := range []string{"Connection", "Proxy-Connection", "Keep-Alive", "Te", "Trailer", "Transfer-Encoding", "Upgrade"} {
+		header.Del(name)
 	}
 }
 

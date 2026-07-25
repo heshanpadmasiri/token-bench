@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,7 +28,8 @@ func TestPromptIncludesInfrastructureSchemaAndSamples(t *testing.T) {
 	for _, expected := range []string{
 		"127.0.0.1:19081", "127.0.0.1:19082/shipment_ops", kafkaUser, kafkaPassword,
 		shipmentTopic, pickupTopic, digitalTopic, "CREATE TABLE fulfillment_events",
-		`"fulfillmentType":"store_pickup"`, "never stop, kill, reconfigure, or replace",
+		`"fulfillmentType":"store_pickup"`, "JSON whitespace and object member order are insignificant",
+		"never stop, kill, reconfigure, or replace",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Errorf("prompt does not contain %q", expected)
@@ -53,6 +55,9 @@ func TestFeedbackAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cleanup() })
+	if _, err := handle.Setup(); err == nil {
+		t.Fatal("second Setup unexpectedly succeeded")
+	}
 	stop := startReferenceApplication(t, handle)
 	t.Cleanup(stop)
 
@@ -69,6 +74,13 @@ func TestFeedbackAndValidation(t *testing.T) {
 	}
 	if !passed {
 		t.Fatal("hidden validation failed")
+	}
+	stop()
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("second cleanup failed: %v", err)
 	}
 }
 
@@ -140,20 +152,23 @@ VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (event_id) DO NOTHING`,
 			writer.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 		writer.WriteHeader(http.StatusAccepted)
-		_, _ = fmt.Fprintf(writer, `{"status":"accepted","eventId":"%s"}`, event["eventId"])
+		_, _ = fmt.Fprintf(writer, "{\n  \"eventId\": %q,\n  \"status\": \"accepted\"\n}", event["eventId"])
 	})
 	go func() { _ = server.Serve(listener) }()
+	var once sync.Once
 	return func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-		cancelConsumers()
-		client.Close()
-		for _, connection := range connections {
-			_ = connection.Close(shutdownCtx)
-		}
+		once.Do(func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = server.Shutdown(shutdownCtx)
+			cancelConsumers()
+			client.Close()
+			for _, connection := range connections {
+				_ = connection.Close(shutdownCtx)
+			}
+		})
 	}
 }
 

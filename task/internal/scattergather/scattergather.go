@@ -16,6 +16,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"token-bench/task/internal/jsoncompare"
 )
 
 const (
@@ -46,6 +48,7 @@ type backend struct {
 
 type observedRequest struct {
 	method string
+	host   string
 	path   string
 	query  string
 	header http.Header
@@ -154,6 +157,9 @@ func (s *scatterGather) Feedback() (string, error) {
 	if err := s.ready(); err != nil {
 		return "", err
 	}
+	if feedback := checkHealth(s.applicationPort); feedback != "" {
+		return feedback, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result := s.runChecks(ctx, []check{
@@ -161,7 +167,7 @@ func (s *scatterGather) Feedback() (string, error) {
 			name:            "gathers three quotes concurrently",
 			body:            `{"product":"widget","quantity":2}`,
 			query:           "region=us&case=feedback",
-			header:          http.Header{"Content-Type": {"application/json"}, "X-Correlation-Id": {"quote-1042"}, "X-Token-Bench": {"preserve-me"}},
+			header:          http.Header{"Content-Type": {"application/json"}, "X-Correlation-Id": {"quote-1042"}, "X-Token-Bench": {"preserve-me"}, "Connection": {"X-Hop-By-Hop"}, "X-Hop-By-Hop": {"remove-me"}},
 			backendStatuses: []int{http.StatusOK, http.StatusOK, http.StatusOK},
 			backendResponses: []string{
 				`{"supplier":"alpha","amount":101.25,"currency":"USD"}`,
@@ -182,8 +188,42 @@ func (s *scatterGather) Feedback() (string, error) {
 			expectFanout:     true,
 		},
 		{
+			name:             "unreachable backend returns 502",
+			body:             `{"product":"adapter","quantity":1}`,
+			header:           http.Header{"Content-Type": {"application/json"}},
+			backendStatuses:  []int{http.StatusOK, 0, http.StatusOK},
+			backendResponses: []string{`{"supplier":"alpha"}`, ``, `{"supplier":"gamma"}`},
+			expectedStatus:   http.StatusBadGateway,
+			expectFanout:     true,
+		},
+		{
+			name:             "invalid backend JSON returns 502",
+			body:             `{"product":"adapter","quantity":2}`,
+			header:           http.Header{"Content-Type": {"application/json"}},
+			backendStatuses:  []int{http.StatusOK, http.StatusOK, http.StatusOK},
+			backendResponses: []string{`{"supplier":"alpha"}`, `not-json`, `{"supplier":"gamma"}`},
+			expectedStatus:   http.StatusBadGateway,
+			expectFanout:     true,
+		},
+		{
 			name:             "malformed JSON returns 400",
 			body:             `{"product":"widget"`,
+			header:           http.Header{"Content-Type": {"application/json"}},
+			backendStatuses:  []int{http.StatusOK, http.StatusOK, http.StatusOK},
+			backendResponses: []string{`{}`, `{}`, `{}`},
+			expectedStatus:   http.StatusBadRequest,
+		},
+		{
+			name:             "trailing JSON returns 400",
+			body:             `{"product":"widget","quantity":2} {}`,
+			header:           http.Header{"Content-Type": {"application/json"}},
+			backendStatuses:  []int{http.StatusOK, http.StatusOK, http.StatusOK},
+			backendResponses: []string{`{}`, `{}`, `{}`},
+			expectedStatus:   http.StatusBadRequest,
+		},
+		{
+			name:             "non-object JSON returns 400",
+			body:             `[]`,
 			header:           http.Header{"Content-Type": {"application/json"}},
 			backendStatuses:  []int{http.StatusOK, http.StatusOK, http.StatusOK},
 			backendResponses: []string{`{}`, `{}`, `{}`},
@@ -210,7 +250,7 @@ func (s *scatterGather) Validation() (bool, error) {
 	result := s.runChecks(ctx, []check{
 		{
 			name:            "hidden quote aggregation",
-			body:            "{\n  \"quantity\": 7,\n  \"product\": \"hidden-adapter\"\n}",
+			body:            "{\n  \"quantity\": 7e0,\n  \"product\": \"hidden-adapter\"\n}",
 			query:           "suite=final&region=eu",
 			header:          http.Header{"Content-Type": {"application/json; charset=utf-8"}, "X-Correlation-Id": {"hidden-quote"}, "X-Token-Bench": {"hidden-header"}},
 			backendStatuses: []int{http.StatusOK, http.StatusOK, http.StatusOK},
@@ -301,8 +341,9 @@ func (s *scatterGather) runCheck(ctx context.Context, current check) checkResult
 			return failure(current, fmt.Sprintf("expected one request at %s backend, got %d", currentBackend.name, len(requests)))
 		}
 		observed := requests[0]
-		if observed.method != http.MethodPost || observed.path != "/quotes" || observed.query != current.query {
-			return failure(current, fmt.Sprintf("%s backend received method=%q path=%q query=%q", currentBackend.name, observed.method, observed.path, observed.query))
+		expectedHost := strings.TrimPrefix(origin(currentBackend.listener.Addr().(*net.TCPAddr).Port), "http://")
+		if observed.method != http.MethodPost || observed.host != expectedHost || observed.path != "/quotes" || observed.query != current.query {
+			return failure(current, fmt.Sprintf("%s backend received method=%q host=%q path=%q query=%q", currentBackend.name, observed.method, observed.host, observed.path, observed.query))
 		}
 		if string(observed.body) != current.body {
 			return failure(current, fmt.Sprintf("%s backend body changed: expected %q, got %q", currentBackend.name, current.body, observed.body))
@@ -312,9 +353,17 @@ func (s *scatterGather) runCheck(ctx context.Context, current check) checkResult
 				return failure(current, fmt.Sprintf("%s backend header %s changed: expected %q, got %q", currentBackend.name, name, current.header.Values(name), observed.header.Values(name)))
 			}
 		}
+		for _, name := range []string{"Connection", "X-Hop-By-Hop"} {
+			if len(observed.header.Values(name)) != 0 {
+				return failure(current, fmt.Sprintf("%s backend received hop-by-hop header %s=%q", currentBackend.name, name, observed.header.Values(name)))
+			}
+		}
+	}
+	if current.expectedStatus != http.StatusOK && bytes.Contains(responseBody, []byte(`"quotes"`)) {
+		return failure(current, fmt.Sprintf("failure response contained a partial quote result: %q", responseBody))
 	}
 	if current.expectedStatus == http.StatusOK {
-		if !strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
+		if !jsoncompare.IsJSONContentType(response.Header.Get("Content-Type")) {
 			return failure(current, fmt.Sprintf("expected application/json response, got Content-Type %q", response.Header.Get("Content-Type")))
 		}
 		if err := validateQuotes(responseBody, current.backendResponses); err != nil {
@@ -334,34 +383,27 @@ func validateQuotes(body []byte, expected []string) error {
 	if len(envelope.Quotes) != len(expected) {
 		return fmt.Errorf("expected %d gathered quotes, got %d in %q", len(expected), len(envelope.Quotes), body)
 	}
-	remaining := make(map[string]int, len(expected))
-	for _, quote := range expected {
-		canonical, err := canonicalJSON([]byte(quote))
-		if err != nil {
-			return err
-		}
-		remaining[canonical]++
-	}
+	matched := make([]bool, len(expected))
 	for _, quote := range envelope.Quotes {
-		canonical, err := canonicalJSON(quote)
-		if err != nil {
-			return fmt.Errorf("gathered quote is invalid JSON: %v", err)
+		found := false
+		for index, candidate := range expected {
+			if matched[index] {
+				continue
+			}
+			equal, err := jsoncompare.Equal([]byte(candidate), quote)
+			if err != nil {
+				return fmt.Errorf("compare gathered quote: %v", err)
+			}
+			if equal {
+				matched[index], found = true, true
+				break
+			}
 		}
-		if remaining[canonical] == 0 {
+		if !found {
 			return fmt.Errorf("response contains unexpected quote %s", quote)
 		}
-		remaining[canonical]--
 	}
 	return nil
-}
-
-func canonicalJSON(value []byte) (string, error) {
-	var decoded any
-	if err := json.Unmarshal(value, &decoded); err != nil {
-		return "", err
-	}
-	canonical, err := json.Marshal(decoded)
-	return string(canonical), err
 }
 
 func startBackend(port int, name string) (*backend, error) {
@@ -406,7 +448,7 @@ func (b *backend) handle(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	b.mu.Lock()
-	b.requests = append(b.requests, observedRequest{request.Method, request.URL.Path, request.URL.RawQuery, request.Header.Clone(), append([]byte(nil), body...)})
+	b.requests = append(b.requests, observedRequest{request.Method, request.Host, request.URL.Path, request.URL.RawQuery, request.Header.Clone(), append([]byte(nil), body...)})
 	status, response, gate := b.status, b.response, b.gate
 	b.mu.Unlock()
 	if gate != nil {
@@ -418,6 +460,13 @@ func (b *backend) handle(writer http.ResponseWriter, request *http.Request) {
 			http.Error(writer, "requests were not scattered concurrently", http.StatusGatewayTimeout)
 			return
 		}
+	}
+	if status == 0 {
+		connection, _, err := writer.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = connection.Close()
+		}
+		return
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(status)
@@ -447,6 +496,19 @@ func (b *barrier) arrive() <-chan struct{} {
 		close(b.release)
 	}
 	return b.release
+}
+
+func checkHealth(port int) string {
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(origin(port) + "/health")
+	if err != nil {
+		return fmt.Sprintf("Check %q failed. Diagnosis: GET /health failed: %v", "application health", err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Sprintf("Check %q failed. Expected a 2xx response, got HTTP %d.", "application health", response.StatusCode)
+	}
+	return ""
 }
 
 func origin(port int) string {

@@ -46,6 +46,9 @@ func TestRedisFeedbackValidationAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cleanup() })
+	if _, err := handle.Setup(); err == nil {
+		t.Fatal("second Setup unexpectedly succeeded")
+	}
 	containerName := handle.containerName
 	stopApplication := startApplication(t, ports[0], ports[1], fmt.Sprintf("127.0.0.1:%d", ports[2]), origin(ports[3])+"/claimed-messages", origin(ports[4])+"/deliveries")
 	t.Cleanup(stopApplication)
@@ -69,14 +72,19 @@ func TestRedisFeedbackValidationAndCleanup(t *testing.T) {
 	if err := cleanup(); err != nil {
 		t.Fatal(err)
 	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("second cleanup failed: %v", err)
+	}
 	if err := exec.Command("docker", "inspect", containerName).Run(); err == nil {
 		t.Fatalf("Redis container %q was not removed", containerName)
 	}
 }
 
-func TestNewRejectsWrongPortCount(t *testing.T) {
-	if _, err := New([]int{19080}).Prompt(); err == nil {
-		t.Fatal("expected wrong port count to fail")
+func TestNewRejectsInvalidPorts(t *testing.T) {
+	for _, ports := range [][]int{{19080}, {19080, 19081, 19082, 19083, 0}, {19080, 19081, 19082, 19083, 65536}} {
+		if _, err := New(ports).Prompt(); err == nil {
+			t.Errorf("New(%v) did not reject invalid ports", ports)
+		}
 	}
 }
 

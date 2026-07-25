@@ -5,6 +5,38 @@ import (
 	"testing"
 )
 
+func TestTaskDefinitions(t *testing.T) {
+	tests := []struct {
+		definition Task
+		name       string
+		ports      int
+		endpoints  []Endpoint
+	}{
+		{NewClaimCheck(), "claim-check", 5, []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}, {Method: "GET", Path: "/health", PortIndex: 1}, {Method: "POST", Path: "/messages", PortIndex: 1}}},
+		{NewContentBasedRouter(), "content-based-router", 3, []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}}},
+		{NewContentEnricher(), "content-enricher", 3, []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/messages"}}},
+		{NewDeadLetterChannel(), "dead-letter-channel", 2, []Endpoint{{Method: "GET", Path: "/health"}}},
+		{NewMultiConsumer(), "multi-consumer", 3, []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/orders"}}},
+		{NewScatterGather(), "scatter-gather", 4, []Endpoint{{Method: "GET", Path: "/health"}, {Method: "POST", Path: "/quotes"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			definition := test.definition
+			if definition.Name != test.name || definition.Resources.NPorts != test.ports || definition.InitFn == nil || definition.RequirementsTemplate == "" {
+				t.Fatalf("invalid task definition: %+v", definition)
+			}
+			if len(definition.Endpoints) != len(test.endpoints) {
+				t.Fatalf("endpoints = %+v, want %+v", definition.Endpoints, test.endpoints)
+			}
+			for index, endpoint := range definition.Endpoints {
+				if endpoint != test.endpoints[index] {
+					t.Errorf("endpoint %d = %+v, want %+v", index, endpoint, test.endpoints[index])
+				}
+			}
+		})
+	}
+}
+
 func TestRenderPromptIncludesSharedServerPreamble(t *testing.T) {
 	prompt, err := RenderPrompt(PromptConfig{
 		Language:          "Go",

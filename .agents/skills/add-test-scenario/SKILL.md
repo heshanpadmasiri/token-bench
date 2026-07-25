@@ -23,5 +23,7 @@ description: Adds a new token-bench HTTP test scenario (task), including its pro
 
 Keep the shared prompt responsible for language, initialization command, fixed application port, and endpoint list. Keep scenario-specific behavior in its own prompt template and internal package.
 
-> [!IMPORTANT]
-> prompt must explicitly say the back end is running and agent can use it for implementation. But **MUST NEVER TRY TO KILL IT**.
+IMPORTANT: prompt must explicitly say the back end is running and agent can use it for implementation. But **MUST NEVER TRY TO KILL IT**.
+
+IMPORTANT: validation should never try to match json strings. It should normalize json response using `jsoncompare`
+  Also add tests to make sure generated source is robust in the same way. Try different number representation different orderings of fields etc.

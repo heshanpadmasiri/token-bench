@@ -47,11 +47,13 @@ Implement `POST /orders`. The request must be a JSON object satisfying:
 - `currency` is exactly three uppercase ASCII letters.
 - Additional properties are allowed and must be preserved.
 
-Malformed or invalid requests return HTTP 400 and must not publish to Kafka. For a valid request, publish the exact raw request body to only the topic selected by the top-level `fulfillmentType`. Use `eventId` as the Kafka record key. Wait for Kafka to acknowledge the record, then return HTTP 202 with `Content-Type: application/json` and exactly:
+Malformed or invalid requests return HTTP 400 and must not publish to Kafka. For a valid request, publish the exact raw request body to only the topic selected by the top-level `fulfillmentType`. Use `eventId` as the Kafka record key. Wait for Kafka to acknowledge the record, then return HTTP 202 with an `application/json` Content-Type and a JSON object equivalent to:
 
 ```json
 {"status":"accepted","eventId":"<eventId>"}
 ```
+
+JSON whitespace and object member order are insignificant.
 
 If Kafka cannot acknowledge the publication, return HTTP 503.
 

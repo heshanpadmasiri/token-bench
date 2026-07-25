@@ -14,13 +14,14 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
-	"reflect"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"token-bench/task/internal/jsoncompare"
 )
 
 const (
@@ -73,14 +74,15 @@ type observedRequest struct {
 }
 
 type check struct {
-	name              string
-	body              string
-	expectedStatus    int
-	expectedResponse  string
-	expectedAddress   *address
-	backendStatus     int
-	backendResponse   string
-	expectBackendCall bool
+	name                string
+	body                string
+	expectedStatus      int
+	expectedResponse    string
+	expectedAddress     *address
+	backendStatus       int
+	backendResponse     string
+	expectBackendCall   bool
+	databaseUnavailable bool
 }
 
 type checkResult struct {
@@ -261,17 +263,24 @@ func (c *contentEnricher) Feedback() (string, error) {
 	if err := c.ready(); err != nil {
 		return "", err
 	}
+	if feedback := c.checkHealth(); feedback != "" {
+		return feedback, nil
+	}
 	rows := feedbackAddresses()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result := c.runChecks(ctx, []check{
 		{name: "enriches a known user", body: `{"messageId":"message-1042","user":{"id":"user-1042","name":"Ada Lovelace","dateOfBirth":"1815-12-10"},"payload":{"orderId":"order-73"}}`, expectedStatus: http.StatusAccepted, expectedAddress: &rows[0].Address, backendStatus: http.StatusOK, backendResponse: `{"stored":true}`, expectBackendCall: true},
 		{name: "successful downstream status is normalized", body: `{"messageId":73,"user":{"id":"user-73","name":"Grace Hopper"},"tags":["public",42]}`, expectedStatus: http.StatusAccepted, expectedAddress: &rows[1].Address, backendStatus: http.StatusNoContent, expectBackendCall: true},
-		{name: "downstream error is relayed", body: `{"user":{"id":"user-1042"},"operation":"reject"}`, expectedStatus: http.StatusUnprocessableEntity, expectedResponse: `{"error":"rejected"}`, expectedAddress: &rows[0].Address, backendStatus: http.StatusUnprocessableEntity, backendResponse: `{"error":"rejected"}`, expectBackendCall: true},
+		{name: "downstream error is relayed", body: `{"user":{"id":"user-1042"},"operation":"reject"}`, expectedStatus: http.StatusUnprocessableEntity, expectedResponse: `{"error":"rejected"}`, expectedAddress: &rows[0].Address, backendStatus: http.StatusUnprocessableEntity, backendResponse: `{ "error" : "rejected" }`, expectBackendCall: true},
+		{name: "unreachable downstream returns 502", body: `{"user":{"id":"user-1042"},"operation":"unreachable"}`, expectedStatus: http.StatusBadGateway, expectedAddress: &rows[0].Address, backendStatus: 0, expectBackendCall: true},
+		{name: "database failure returns 503", body: `{"user":{"id":"user-1042"}}`, expectedStatus: http.StatusServiceUnavailable, backendStatus: http.StatusOK, databaseUnavailable: true},
 		{name: "unknown user returns 404", body: `{"user":{"id":"missing-user"}}`, expectedStatus: http.StatusNotFound, backendStatus: http.StatusOK},
 		{name: "existing top-level address returns 400", body: `{"user":{"id":"user-1042"},"address":{"city":"supplied by caller"}}`, expectedStatus: http.StatusBadRequest, backendStatus: http.StatusOK},
 		{name: "existing nested address returns 400", body: `{"user":{"id":"user-1042","address":{"city":"supplied by caller"}}}`, expectedStatus: http.StatusBadRequest, backendStatus: http.StatusOK},
 		{name: "malformed JSON returns 400", body: `{"user":{"id":"user-1042"}`, expectedStatus: http.StatusBadRequest, backendStatus: http.StatusOK},
+		{name: "trailing JSON returns 400", body: `{"user":{"id":"user-1042"}} {}`, expectedStatus: http.StatusBadRequest, backendStatus: http.StatusOK},
+		{name: "non-object JSON returns 400", body: `[]`, expectedStatus: http.StatusBadRequest, backendStatus: http.StatusOK},
 		{name: "missing user id returns 400", body: `{"user":{"name":"No Identifier"}}`, expectedStatus: http.StatusBadRequest, backendStatus: http.StatusOK},
 	})
 	return result.feedback, nil
@@ -286,7 +295,7 @@ func (c *contentEnricher) Validation() (bool, error) {
 	defer cancel()
 	result := c.runChecks(ctx, []check{
 		{name: "hidden enrichment", body: `{"metadata":{"attempt":2,"active":true},"user":{"name":"Hidden User","id":"hidden-user-19","dateOfBirth":"2001-01-02"},"messageId":"hidden-19"}`, expectedStatus: http.StatusAccepted, expectedAddress: &rows[0].Address, backendStatus: http.StatusCreated, backendResponse: `created`, expectBackendCall: true},
-		{name: "hidden nested fields are preserved", body: `{"user":{"id":"hidden-user-88","preferences":{"languages":["ja","en"]}},"payload":{"amount":19.95,"nullable":null}}`, expectedStatus: http.StatusAccepted, expectedAddress: &rows[1].Address, backendStatus: http.StatusOK, backendResponse: `ignored`, expectBackendCall: true},
+		{name: "hidden nested fields are preserved", body: `{"user":{"id":"hidden-user-88","preferences":{"languages":["ja","en"]}},"payload":{"amount":1.995e1,"nullable":null}}`, expectedStatus: http.StatusAccepted, expectedAddress: &rows[1].Address, backendStatus: http.StatusOK, backendResponse: `ignored`, expectBackendCall: true},
 		{name: "hidden non-string id", body: `{"user":{"id":88}}`, expectedStatus: http.StatusBadRequest, backendStatus: http.StatusOK},
 		{name: "hidden empty id", body: `{"user":{"id":""}}`, expectedStatus: http.StatusBadRequest, backendStatus: http.StatusOK},
 		{name: "hidden existing address", body: `{"user":{"id":"hidden-user-19"},"address":null}`, expectedStatus: http.StatusBadRequest, backendStatus: http.StatusOK},
@@ -306,6 +315,14 @@ func (c *contentEnricher) runChecks(ctx context.Context, checks []check) checkRe
 
 func (c *contentEnricher) runCheck(ctx context.Context, current check) checkResult {
 	c.backend.configure(current.backendStatus, current.backendResponse)
+	if current.databaseUnavailable {
+		if _, err := c.database.Exec(ctx, "ALTER TABLE user_addresses RENAME TO user_addresses_unavailable"); err != nil {
+			return failure(current, fmt.Sprintf("make database unavailable for check: %v", err))
+		}
+		defer func() {
+			_, _ = c.database.Exec(context.Background(), "ALTER TABLE user_addresses_unavailable RENAME TO user_addresses")
+		}()
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, origin(c.applicationPort)+"/messages", strings.NewReader(current.body))
 	if err != nil {
 		return failure(current, fmt.Sprintf("construct request: %v", err))
@@ -323,8 +340,11 @@ func (c *contentEnricher) runCheck(ctx context.Context, current check) checkResu
 	if response.StatusCode != current.expectedStatus {
 		return failure(current, fmt.Sprintf("expected HTTP %d, got HTTP %d with body %q", current.expectedStatus, response.StatusCode, responseBody))
 	}
-	if string(responseBody) != current.expectedResponse {
-		return failure(current, fmt.Sprintf("expected response body %q, got %q", current.expectedResponse, responseBody))
+	if current.expectedStatus == http.StatusAccepted || current.expectedResponse != "" {
+		responseMatches, compareErr := jsoncompare.EqualResponse([]byte(current.expectedResponse), responseBody)
+		if compareErr != nil || !responseMatches {
+			return failure(current, fmt.Sprintf("expected response body %q, got %q (comparison error: %v)", current.expectedResponse, responseBody, compareErr))
+		}
 	}
 	requests := c.backend.snapshot()
 	if !current.expectBackendCall {
@@ -340,7 +360,7 @@ func (c *contentEnricher) runCheck(ctx context.Context, current check) checkResu
 	if observed.method != http.MethodPost || observed.path != "/enriched-messages" {
 		return failure(current, fmt.Sprintf("downstream received method=%q path=%q", observed.method, observed.path))
 	}
-	var expected, actual map[string]any
+	var expected map[string]any
 	if err := json.Unmarshal([]byte(current.body), &expected); err != nil {
 		return failure(current, fmt.Sprintf("decode expected request: %v", err))
 	}
@@ -349,16 +369,24 @@ func (c *contentEnricher) runCheck(ctx context.Context, current check) checkResu
 	if err != nil {
 		return failure(current, fmt.Sprintf("encode expected enriched request: %v", err))
 	}
-	if err := json.Unmarshal(expectedJSON, &expected); err != nil {
-		return failure(current, fmt.Sprintf("normalize expected enriched request: %v", err))
-	}
-	if err := json.Unmarshal(observed.body, &actual); err != nil {
-		return failure(current, fmt.Sprintf("downstream body is not valid JSON: %v", err))
-	}
-	if !reflect.DeepEqual(actual, expected) {
-		return failure(current, fmt.Sprintf("downstream body was not the preserved, enriched message: expected %s, got %s", expectedJSON, observed.body))
+	equal, compareErr := jsoncompare.Equal(expectedJSON, observed.body)
+	if compareErr != nil || !equal {
+		return failure(current, fmt.Sprintf("downstream body was not the preserved, enriched message: expected %s, got %s (comparison error: %v)", expectedJSON, observed.body, compareErr))
 	}
 	return checkResult{passed: true}
+}
+
+func (c *contentEnricher) checkHealth() string {
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(origin(c.applicationPort) + "/health")
+	if err != nil {
+		return fmt.Sprintf("Check %q failed. Diagnosis: GET /health failed: %v", "application health", err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Sprintf("Check %q failed. Expected a 2xx response, got HTTP %d.", "application health", response.StatusCode)
+	}
+	return ""
 }
 
 func (c *contentEnricher) ready() error {
@@ -400,6 +428,13 @@ func (b *backend) handle(writer http.ResponseWriter, request *http.Request) {
 	b.requests = append(b.requests, observedRequest{method: request.Method, path: request.URL.Path, body: append([]byte(nil), body...)})
 	status, response := b.status, b.response
 	b.mu.Unlock()
+	if status == 0 {
+		connection, _, hijackErr := writer.(http.Hijacker).Hijack()
+		if hijackErr == nil {
+			_ = connection.Close()
+		}
+		return
+	}
 	writer.WriteHeader(status)
 	_, _ = io.WriteString(writer, response)
 }

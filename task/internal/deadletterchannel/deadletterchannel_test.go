@@ -22,6 +22,7 @@ func TestPromptIncludesRabbitMQQueuesAndConsumerRules(t *testing.T) {
 	for _, expected := range []string{
 		"amqp://guest:guest@127.0.0.1:19081/", "messages", "dead-letters",
 		`"amount"`, "negative", "manual acknowledgements", "requeue disabled", "x-death",
+		"before and during its checks",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Errorf("prompt does not contain %q", expected)
@@ -38,6 +39,9 @@ func TestRabbitMQFeedbackValidationAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cleanup() })
+	if _, err := handle.Setup(); err == nil {
+		t.Fatal("second Setup unexpectedly succeeded")
+	}
 	containerName := handle.containerName
 	stopApplication := startApplication(t, ports[0], handle.brokerURL())
 	t.Cleanup(stopApplication)
@@ -61,14 +65,19 @@ func TestRabbitMQFeedbackValidationAndCleanup(t *testing.T) {
 	if err := cleanup(); err != nil {
 		t.Fatal(err)
 	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("second cleanup failed: %v", err)
+	}
 	if err := exec.Command("docker", "inspect", containerName).Run(); err == nil {
 		t.Fatalf("RabbitMQ container %q was not removed", containerName)
 	}
 }
 
-func TestNewRejectsWrongPortCount(t *testing.T) {
-	if _, err := New([]int{19080}).Prompt(); err == nil {
-		t.Fatal("expected wrong port count to fail")
+func TestNewRejectsInvalidPorts(t *testing.T) {
+	for _, ports := range [][]int{{19080}, {19080, 0}, {19080, 65536}} {
+		if _, err := New(ports).Prompt(); err == nil {
+			t.Errorf("New(%v) did not reject invalid ports", ports)
+		}
 	}
 }
 

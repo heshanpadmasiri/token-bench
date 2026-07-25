@@ -15,6 +15,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"token-bench/task/internal/jsoncompare"
 )
 
 const requiredPorts = 3
@@ -43,6 +45,7 @@ type backend struct {
 
 type observedRequest struct {
 	method string
+	host   string
 	path   string
 	query  string
 	header http.Header
@@ -94,11 +97,11 @@ func (c *contentBasedRouting) Setup() (func() error, error) {
 	if c.orders != nil || c.invoices != nil {
 		return nil, errors.New("content-based router is already set up")
 	}
-	orders, err := startBackend(c.ordersPort, "orders", http.StatusCreated, `{"backend":"orders"}`)
+	orders, err := startBackend(c.ordersPort, "orders", http.StatusCreated, "{\n  \"backend\": \"orders\"\n}")
 	if err != nil {
 		return nil, fmt.Errorf("start orders backend: %w", err)
 	}
-	invoices, err := startBackend(c.invoicesPort, "invoices", http.StatusAccepted, `{"backend":"invoices"}`)
+	invoices, err := startBackend(c.invoicesPort, "invoices", http.StatusAccepted, "{ \"backend\" : \"invoices\" }")
 	if err != nil {
 		_ = orders.stop()
 		return nil, fmt.Errorf("start invoices backend: %w", err)
@@ -140,6 +143,9 @@ func (c *contentBasedRouting) Feedback() (string, error) {
 	if err := c.ready(); err != nil {
 		return "", err
 	}
+	if feedback := checkHealth(c.applicationPort); feedback != "" {
+		return feedback, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result := c.runChecks(ctx, []check{
@@ -147,7 +153,7 @@ func (c *contentBasedRouting) Feedback() (string, error) {
 			name:            "order routes to orders",
 			body:            "{\n  \"messageType\": \"order\",\n  \"id\": \"order-1042\",\n  \"payload\": {\"amount\": 42}\n}",
 			query:           "source=feedback&case=order",
-			header:          http.Header{"Content-Type": {"application/json; charset=utf-8"}, "X-Correlation-Id": {"order-1042"}, "X-Token-Bench": {"preserve-me"}},
+			header:          http.Header{"Content-Type": {"application/json; charset=utf-8"}, "X-Correlation-Id": {"order-1042"}, "X-Token-Bench": {"preserve-me"}, "Connection": {"X-Hop-By-Hop"}, "X-Hop-By-Hop": {"remove-me"}},
 			expectedBackend: c.orders,
 			expectedStatus:  http.StatusCreated,
 		},
@@ -162,6 +168,8 @@ func (c *contentBasedRouting) Feedback() (string, error) {
 		{name: "unknown type returns 400", body: `{"messageType":"shipment"}`, expectedStatus: http.StatusBadRequest},
 		{name: "missing type returns 400", body: `{"id":10}`, expectedStatus: http.StatusBadRequest},
 		{name: "malformed JSON returns 400", body: `{"messageType":"order"`, expectedStatus: http.StatusBadRequest},
+		{name: "trailing JSON returns 400", body: `{"messageType":"order"} {}`, expectedStatus: http.StatusBadRequest},
+		{name: "non-object JSON returns 400", body: `[]`, expectedStatus: http.StatusBadRequest},
 	})
 	return result.feedback, nil
 }
@@ -262,8 +270,12 @@ func (c *contentBasedRouting) runCheck(ctx context.Context, current check) check
 		return failure(current, fmt.Sprintf("unexpectedly contacted %s backend", unexpectedName))
 	}
 	observed := expected[0]
-	if observed.method != http.MethodPost || observed.path != "/messages" || observed.query != current.query {
-		return failure(current, fmt.Sprintf("backend received method=%q path=%q query=%q", observed.method, observed.path, observed.query))
+	expectedHost := strings.TrimPrefix(origin(c.ordersPort), "http://")
+	if current.expectedBackend == c.invoices {
+		expectedHost = strings.TrimPrefix(origin(c.invoicesPort), "http://")
+	}
+	if observed.method != http.MethodPost || observed.host != expectedHost || observed.path != "/messages" || observed.query != current.query {
+		return failure(current, fmt.Sprintf("backend received method=%q host=%q path=%q query=%q", observed.method, observed.host, observed.path, observed.query))
 	}
 	if string(observed.body) != current.body {
 		return failure(current, fmt.Sprintf("backend body changed: expected %q, got %q", current.body, observed.body))
@@ -273,11 +285,21 @@ func (c *contentBasedRouting) runCheck(ctx context.Context, current check) check
 			return failure(current, fmt.Sprintf("backend header %s changed: expected %q, got %q", name, current.header.Values(name), observed.header.Values(name)))
 		}
 	}
-	if string(responseBody) != current.expectedBackend.response {
-		return failure(current, fmt.Sprintf("backend response body was not relayed: expected %q, got %q", current.expectedBackend.response, responseBody))
+	for _, name := range []string{"Connection", "X-Hop-By-Hop"} {
+		if len(observed.header.Values(name)) != 0 {
+			return failure(current, fmt.Sprintf("backend received hop-by-hop header %s=%q", name, observed.header.Values(name)))
+		}
 	}
-	if response.Header.Get("Content-Type") != "application/json" || response.Header.Get("X-Token-Bench-Backend") != current.expectedBackend.name {
+	expectedResponse := []byte(fmt.Sprintf(`{"backend":%q}`, current.expectedBackend.name))
+	equal, compareErr := jsoncompare.Equal(expectedResponse, responseBody)
+	if compareErr != nil || !equal {
+		return failure(current, fmt.Sprintf("backend JSON response was not relayed: expected %q, got %q (comparison error: %v)", expectedResponse, responseBody, compareErr))
+	}
+	if !jsoncompare.IsJSONContentType(response.Header.Get("Content-Type")) || response.Header.Get("X-Token-Bench-Backend") != current.expectedBackend.name {
 		return failure(current, fmt.Sprintf("backend response headers were not relayed: Content-Type=%q X-Token-Bench-Backend=%q", response.Header.Get("Content-Type"), response.Header.Get("X-Token-Bench-Backend")))
+	}
+	if response.Header.Get("Connection") != "" || response.Header.Get("X-Backend-Hop") != "" {
+		return failure(current, fmt.Sprintf("hop-by-hop response headers were relayed: Connection=%q X-Backend-Hop=%q", response.Header.Get("Connection"), response.Header.Get("X-Backend-Hop")))
 	}
 	return checkResult{passed: true}
 }
@@ -302,6 +324,7 @@ func (b *backend) handle(writer http.ResponseWriter, request *http.Request) {
 	b.mu.Lock()
 	b.requests = append(b.requests, observedRequest{
 		method: request.Method,
+		host:   request.Host,
 		path:   request.URL.Path,
 		query:  request.URL.RawQuery,
 		header: request.Header.Clone(),
@@ -310,6 +333,8 @@ func (b *backend) handle(writer http.ResponseWriter, request *http.Request) {
 	b.mu.Unlock()
 	writer.Header().Set("Content-Type", "application/json")
 	writer.Header().Set("X-Token-Bench-Backend", b.name)
+	writer.Header().Set("Connection", "X-Backend-Hop")
+	writer.Header().Set("X-Backend-Hop", "remove-me")
 	writer.WriteHeader(b.statusCode)
 	_, _ = io.WriteString(writer, b.response)
 }
@@ -333,6 +358,19 @@ func (b *backend) stop() error {
 		return fmt.Errorf("stop %s backend: %w", b.name, err)
 	}
 	return nil
+}
+
+func checkHealth(port int) string {
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(origin(port) + "/health")
+	if err != nil {
+		return fmt.Sprintf("Check %q failed. Diagnosis: GET /health failed: %v", "application health", err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Sprintf("Check %q failed. Expected a 2xx response, got HTTP %d.", "application health", response.StatusCode)
+	}
+	return ""
 }
 
 func origin(port int) string {

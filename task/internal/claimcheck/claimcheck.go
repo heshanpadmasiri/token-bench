@@ -14,13 +14,14 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
-	"reflect"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"token-bench/task/internal/jsoncompare"
 )
 
 const (
@@ -237,12 +238,16 @@ func (c *claimCheck) Feedback() (string, error) {
 	defer cancel()
 	result := c.runChecks(ctx, []check{
 		{name: "claims and restores user ID", body: `{"userId":"user-1042","userName":"Ada Lovelace","userAddress":{"street":"12 Example Street","city":"London","state":"Greater London","postalCode":"SW1A 1AA","country":"GB"},"metadata":{"attempt":1,"active":true}}`, repeat: 2, expectedStatus: http.StatusAccepted, expectedUserID: "user-1042", delivery: delivery, finalStatus: http.StatusCreated, finalResponse: `created`, expectedFinal: message("user-1042", "Ada Lovelace", address{"12 Example Street", "London", "Greater London", "SW1A 1AA", "GB"}, delivery, map[string]any{"metadata": map[string]any{"attempt": float64(1), "active": true}}), expectIntermediary: true, expectFinal: true},
-		{name: "final failure is relayed and retains claim", body: `{"userId":"user-73","userName":"Grace Hopper","userAddress":{"street":"73 Market Avenue","city":"Arlington","state":"VA","postalCode":"22201","country":"US"}}`, expectedStatus: http.StatusServiceUnavailable, expectedResponse: `{"error":"unavailable"}`, expectedUserID: "user-73", delivery: delivery, finalStatus: http.StatusServiceUnavailable, finalResponse: `{"error":"unavailable"}`, expectedFinal: message("user-73", "Grace Hopper", address{"73 Market Avenue", "Arlington", "VA", "22201", "US"}, delivery, nil), expectIntermediary: true, expectFinal: true, expectClaimRetained: true},
+		{name: "final failure is relayed and retains claim", body: `{"userId":"user-73","userName":"Grace Hopper","userAddress":{"street":"73 Market Avenue","city":"Arlington","state":"VA","postalCode":"22201","country":"US"}}`, expectedStatus: http.StatusServiceUnavailable, expectedResponse: `{"error":"unavailable"}`, expectedUserID: "user-73", delivery: delivery, finalStatus: http.StatusServiceUnavailable, finalResponse: `{ "error" : "unavailable" }`, expectedFinal: message("user-73", "Grace Hopper", address{"73 Market Avenue", "Arlington", "VA", "22201", "US"}, delivery, nil), expectIntermediary: true, expectFinal: true, expectClaimRetained: true},
 		{name: "intermediary rejection is relayed and retains claim", body: `{"userId":"user-9","userName":"Blocked User","userAddress":{"street":"9 Main Street","city":"Boston","state":"MA","postalCode":"02108","country":"US"}}`, expectedStatus: http.StatusConflict, expectedResponse: `blocked`, expectedUserID: "user-9", delivery: delivery, intermediaryStatus: http.StatusConflict, intermediaryResponse: `blocked`, finalStatus: http.StatusOK, expectIntermediary: true, expectClaimRetained: true},
+		{name: "unreachable intermediary returns 502", body: `{"userId":"user-unreachable-a","userName":"Retry User","userAddress":{"street":"1 Main","city":"Boston","state":"MA","postalCode":"02108","country":"US"}}`, expectedStatus: http.StatusBadGateway, expectedUserID: "user-unreachable-a", delivery: delivery, intermediaryStatus: -1, finalStatus: http.StatusOK, expectIntermediary: true, expectClaimRetained: true},
+		{name: "unreachable final returns 502", body: `{"userId":"user-unreachable-b","userName":"Retry User","userAddress":{"street":"2 Main","city":"Boston","state":"MA","postalCode":"02108","country":"US"}}`, expectedStatus: http.StatusBadGateway, expectedUserID: "user-unreachable-b", delivery: delivery, finalStatus: -1, expectedFinal: message("user-unreachable-b", "Retry User", address{"2 Main", "Boston", "MA", "02108", "US"}, delivery, nil), expectIntermediary: true, expectFinal: true, expectClaimRetained: true},
 		{name: "malformed JSON", body: `{"userId":"user-1"`, expectedStatus: http.StatusBadRequest},
 		{name: "missing user name", body: `{"userId":"user-1","userAddress":{"street":"1 A","city":"B","state":"C","postalCode":"D","country":"E"}}`, expectedStatus: http.StatusBadRequest},
 		{name: "invalid address", body: `{"userId":"user-1","userName":"Name","userAddress":{"street":"","city":"B","state":"C","postalCode":"D","country":"E"}}`, expectedStatus: http.StatusBadRequest},
 		{name: "reserved message ID", body: `{"userId":"user-1","userName":"Name","messageId":"caller-value","userAddress":{"street":"A","city":"B","state":"C","postalCode":"D","country":"E"}}`, expectedStatus: http.StatusBadRequest},
+		{name: "trailing JSON", body: `{"userId":"user-1","userName":"Name","userAddress":{"street":"A","city":"B","state":"C","postalCode":"D","country":"E"}} {}`, expectedStatus: http.StatusBadRequest},
+		{name: "non-object JSON", body: `[]`, expectedStatus: http.StatusBadRequest},
 	})
 	if !result.passed {
 		return result.feedback, nil
@@ -258,7 +263,7 @@ func (c *claimCheck) Validation() (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result := c.runChecks(ctx, []check{
-		{name: "hidden nested fields", body: `{"userName":"Hidden User","userAddress":{"country":"JP","postalCode":"600-8216","state":"Kyoto","city":"Kyoto","street":"4-2 Sakura Lane","extra":{"floor":2}},"userId":"hidden-user-88","payload":{"amount":19.95,"tags":["a",2],"nullable":null}}`, expectedStatus: http.StatusAccepted, expectedUserID: "hidden-user-88", delivery: delivery, finalStatus: http.StatusNoContent, expectedFinal: message("hidden-user-88", "Hidden User", address{"4-2 Sakura Lane", "Kyoto", "Kyoto", "600-8216", "JP"}, delivery, map[string]any{"payload": map[string]any{"amount": 19.95, "tags": []any{"a", float64(2)}, "nullable": nil}, "userAddressExtra": map[string]any{"extra": map[string]any{"floor": float64(2)}}}), expectIntermediary: true, expectFinal: true},
+		{name: "hidden nested fields", body: `{"userName":"Hidden User","userAddress":{"country":"JP","postalCode":"600-8216","state":"Kyoto","city":"Kyoto","street":"4-2 Sakura Lane","extra":{"floor":2}},"userId":"hidden-user-88","payload":{"amount":1.995e1,"tags":["a",2.0],"nullable":null}}`, expectedStatus: http.StatusAccepted, expectedUserID: "hidden-user-88", delivery: delivery, finalStatus: http.StatusNoContent, expectedFinal: message("hidden-user-88", "Hidden User", address{"4-2 Sakura Lane", "Kyoto", "Kyoto", "600-8216", "JP"}, delivery, map[string]any{"payload": map[string]any{"amount": 19.95, "tags": []any{"a", float64(2)}, "nullable": nil}, "userAddressExtra": map[string]any{"extra": map[string]any{"floor": float64(2)}}}), expectIntermediary: true, expectFinal: true},
 		{name: "hidden existing delivery address", body: `{"userId":"hidden","userName":"Hidden","userAddress":{"street":"A","city":"B","state":"C","postalCode":"D","country":"E"},"deliveryAddress":null}`, expectedStatus: http.StatusBadRequest},
 		{name: "hidden non-string user ID", body: `{"userId":88,"userName":"Hidden","userAddress":{"street":"A","city":"B","state":"C","postalCode":"D","country":"E"}}`, expectedStatus: http.StatusBadRequest},
 	})
@@ -318,8 +323,14 @@ func (c *claimCheck) runCheck(ctx context.Context, current check) checkResult {
 		if readErr != nil {
 			return failure(current, fmt.Sprintf("read response: %v", readErr))
 		}
-		if response.StatusCode != current.expectedStatus || string(body) != current.expectedResponse {
+		if response.StatusCode != current.expectedStatus {
 			return failure(current, fmt.Sprintf("expected HTTP %d body %q, got HTTP %d body %q", current.expectedStatus, current.expectedResponse, response.StatusCode, body))
+		}
+		if current.expectedStatus == http.StatusAccepted || current.expectedResponse != "" {
+			responseMatches, compareErr := jsoncompare.EqualResponse([]byte(current.expectedResponse), body)
+			if compareErr != nil || !responseMatches {
+				return failure(current, fmt.Sprintf("expected body %q, got %q (comparison error: %v)", current.expectedResponse, body, compareErr))
+			}
 		}
 	}
 	intermediaryRequests, messageIDs := c.intermediary.snapshot()
@@ -352,9 +363,10 @@ func (c *claimCheck) runCheck(ctx context.Context, current check) checkResult {
 			return failure(current, fmt.Sprintf("final endpoint received method=%q path=%q", observed.method, observed.path))
 		}
 		if current.expectedFinal != nil {
-			var actual map[string]any
-			if err := json.Unmarshal(observed.body, &actual); err != nil || !reflect.DeepEqual(actual, normalize(current.expectedFinal)) {
-				return failure(current, fmt.Sprintf("final payload was not restored and preserved: got %s", observed.body))
+			expected, err := json.Marshal(current.expectedFinal)
+			equal, compareErr := jsoncompare.Equal(expected, observed.body)
+			if err != nil || compareErr != nil || !equal {
+				return failure(current, fmt.Sprintf("final payload was not restored and preserved: got %s (comparison error: %v)", observed.body, errors.Join(err, compareErr)))
 			}
 		}
 	}
@@ -371,7 +383,7 @@ func (c *claimCheck) runCheck(ctx context.Context, current check) checkResult {
 				return failure(current, fmt.Sprintf("claim was not retained after failure: value=%q error=%v", value, err))
 			}
 			ttl, err := c.redis.TTL(ctx, "claim:"+id).Result()
-			if err != nil || ttl <= 0 || ttl > claimTTL {
+			if err != nil || ttl < claimTTL-30*time.Second || ttl > claimTTL {
 				return failure(current, fmt.Sprintf("claim TTL is invalid: %v (error %v)", ttl, err))
 			}
 		} else if current.expectFinal && current.finalStatus >= 200 && current.finalStatus < 300 && !errors.Is(err, redis.Nil) {
@@ -379,13 +391,6 @@ func (c *claimCheck) runCheck(ctx context.Context, current check) checkResult {
 		}
 	}
 	return checkResult{passed: true}
-}
-
-func normalize(value map[string]any) map[string]any {
-	encoded, _ := json.Marshal(value)
-	var normalized map[string]any
-	_ = json.Unmarshal(encoded, &normalized)
-	return normalized
 }
 
 func (c *claimCheck) checkHealth() string {
@@ -408,7 +413,7 @@ func (c *claimCheck) checkServiceBErrors(ctx context.Context, hidden bool) strin
 	cases := []struct {
 		name, body string
 		status     int
-	}{{"unknown claim", `{"messageId":"does-not-exist","userName":"Unknown"}`, http.StatusNotFound}, {"malformed B payload", `{"messageId":`, http.StatusBadRequest}, {"B payload already has user ID", `{"messageId":"x","userId":"leaked"}`, http.StatusBadRequest}}
+	}{{"unknown claim", `{"messageId":"does-not-exist","userName":"Unknown"}`, http.StatusNotFound}, {"malformed B payload", `{"messageId":`, http.StatusBadRequest}, {"B payload already has user ID", `{"messageId":"x","userId":"leaked"}`, http.StatusBadRequest}, {"B trailing JSON", `{"messageId":"x"} {}`, http.StatusBadRequest}, {"B non-object JSON", `[]`, http.StatusBadRequest}}
 	for _, current := range cases {
 		c.final.configure(http.StatusOK, "")
 		request, _ := http.NewRequestWithContext(ctx, http.MethodPost, origin(c.serviceBPort)+"/messages", strings.NewReader(current.body))
@@ -475,6 +480,13 @@ func (b *recordingBackend) handle(writer http.ResponseWriter, request *http.Requ
 	b.requests = append(b.requests, observedRequest{request.Method, request.URL.Path, append([]byte(nil), body...)})
 	status, response := b.status, b.response
 	b.mu.Unlock()
+	if status == -1 {
+		connection, _, err := writer.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = connection.Close()
+		}
+		return
+	}
 	writer.WriteHeader(status)
 	_, _ = io.WriteString(writer, response)
 }
@@ -536,6 +548,13 @@ func (b *intermediaryBackend) handle(writer http.ResponseWriter, request *http.R
 	b.mu.Lock()
 	b.messageIDs = append(b.messageIDs, id)
 	b.mu.Unlock()
+	if status == -1 {
+		connection, _, err := writer.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = connection.Close()
+		}
+		return
+	}
 	if status != 0 {
 		writer.WriteHeader(status)
 		_, _ = io.WriteString(writer, response)
