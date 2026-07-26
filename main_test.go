@@ -232,6 +232,30 @@ func TestRenderReportForFinalTUI(t *testing.T) {
 	}
 }
 
+func TestHiddenValidationFailureIsReportedWithoutFailingBenchmarkProcess(t *testing.T) {
+	runs := []runResult{{Run: 1, Passed: false, Error: hiddenValidationFailure}}
+	if exitCode := benchmarkExitCode(runs); exitCode != 0 {
+		t.Fatalf("benchmarkExitCode() = %d, want 0", exitCode)
+	}
+
+	rendered, err := renderReport(report{
+		Task: "content-based-router", Language: "go", Harness: "pi", Runs: runs,
+	}, "/tmp/results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered, hiddenValidationFailure) {
+		t.Fatalf("rendered report does not state hidden validation failure:\n%s", rendered)
+	}
+}
+
+func TestOperationalFailureFailsBenchmarkProcess(t *testing.T) {
+	runs := []runResult{{Run: 1, Passed: false, Error: "application failed to start"}}
+	if exitCode := benchmarkExitCode(runs); exitCode != 1 {
+		t.Fatalf("benchmarkExitCode() = %d, want 1", exitCode)
+	}
+}
+
 func harnessTokenCount(input, output int) benchresult.TokenCount {
 	return benchresult.TokenCount{Input: input, Output: output}
 }

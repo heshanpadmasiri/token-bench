@@ -20,6 +20,8 @@ import (
 )
 
 // TODO: add optional harness flags (system prompt, model, thinking)
+const hiddenValidationFailure = "hidden validation failed"
+
 const usage = `usage: token-bench <task> <language> <harness> [--n-runs=N] [--target=DIR] [--skills=DIR] [--phoenix-endpoint=URL]
 
 Implementations:
@@ -160,8 +162,12 @@ func run(arguments []string) (exitCode int) {
 		fmt.Fprintln(os.Stderr, fmt.Errorf("render benchmark results: %w", err))
 		return 1
 	}
-	for _, current := range result.Runs {
-		if !current.Passed {
+	return benchmarkExitCode(result.Runs)
+}
+
+func benchmarkExitCode(runs []runResult) int {
+	for _, current := range runs {
+		if !current.Passed && current.Error != hiddenValidationFailure {
 			return 1
 		}
 	}
@@ -274,7 +280,7 @@ func executeRun(current runResult, directory string, definition task.Task, imple
 			return result
 		}
 		if feedback == "" {
-			result.Error = "hidden validation failed"
+			result.Error = hiddenValidationFailure
 			return result
 		}
 		if result.Corrections == 3 {
