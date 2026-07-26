@@ -8,7 +8,17 @@ description: Use this when user asks you to create a service.
 - IMPORTANT: never try to manually parse the payload or validate it. Always explicitly define the shape of the input and let runtime validate it
 
 First identify the shape of data you should receive from outside. Also determine the expected shape of the result. For inputs define `readonly` open records and for result define closed records 
-  - Open records allow addition fields that can be accessed with `a.["fieldName"]` notation
+  - Open records allow addition fields than what you describe
+  ```ballerina
+     anydata a = a.["fieldName"]; // By default rest type is anydata
+     if a == () {
+        // no a
+     } if a is int {
+        int x = a; // NOTE: a is narrowed to int type. 
+     }
+     boolean hasField = a.hasField("fieldName"); // When you just need to check if a has a field
+      
+  ```
 
 
 ```ballerina
