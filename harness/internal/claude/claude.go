@@ -247,23 +247,22 @@ func readStream(reader io.Reader, running *runningProcess) {
 			readErr = fmt.Errorf("decode Claude stream envelope: %w", err)
 			return
 		}
+		if envelope.Type == "result" {
+			var result resultEvent
+			if err := json.Unmarshal(raw, &result); err != nil {
+				readErr = fmt.Errorf("decode Claude result: %w", err)
+				return
+			}
+			select {
+			case running.results <- result:
+			case <-running.stopping:
+			}
+		}
 		if err := running.trace.Process(envelope.Type, raw); err != nil {
 			readErr = fmt.Errorf("trace Claude stream event: %w", err)
 			return
 		}
 		publishStatus(running.status, envelope.Type, raw)
-		if envelope.Type != "result" {
-			continue
-		}
-		var result resultEvent
-		if err := json.Unmarshal(raw, &result); err != nil {
-			readErr = fmt.Errorf("decode Claude result: %w", err)
-			return
-		}
-		select {
-		case running.results <- result:
-		case <-running.stopping:
-		}
 	}
 }
 

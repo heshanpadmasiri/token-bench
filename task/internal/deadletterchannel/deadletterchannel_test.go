@@ -60,6 +60,13 @@ func TestRabbitMQFeedbackValidationAndCleanup(t *testing.T) {
 	if !passed {
 		t.Fatal("hidden validation failed")
 	}
+	feedback, err = handle.Feedback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feedback != "" {
+		t.Fatal(feedback)
+	}
 
 	stopApplication()
 	if err := cleanup(); err != nil {
@@ -81,12 +88,39 @@ func TestNewRejectsInvalidPorts(t *testing.T) {
 	}
 }
 
+func TestCleanupUsesBoundedRabbitMQClose(t *testing.T) {
+	connection := &recordingRabbitMQConnection{}
+	handle := &deadLetterChannel{connection: connection}
+	started := time.Now()
+
+	if err := handle.cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if remaining := connection.deadline.Sub(started); remaining < connectionCloseTimeout || remaining > connectionCloseTimeout+time.Second {
+		t.Fatalf("unexpected RabbitMQ close deadline: %s", remaining)
+	}
+	if handle.connection != nil {
+		t.Fatal("cleanup retained the RabbitMQ connection")
+	}
+}
+
 func requireDocker(t *testing.T) {
 	t.Helper()
 	if err := exec.Command("docker", "info").Run(); err != nil {
 		t.Skip("Docker daemon is not available")
 	}
 }
+
+type recordingRabbitMQConnection struct {
+	deadline time.Time
+}
+
+func (*recordingRabbitMQConnection) Channel() (*amqp.Channel, error) { return nil, nil }
+func (c *recordingRabbitMQConnection) CloseDeadline(deadline time.Time) error {
+	c.deadline = deadline
+	return nil
+}
+func (*recordingRabbitMQConnection) IsClosed() bool { return false }
 
 func startApplication(t *testing.T, applicationPort int, brokerURL string) func() {
 	t.Helper()

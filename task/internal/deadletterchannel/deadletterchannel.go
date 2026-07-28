@@ -21,22 +21,30 @@ import (
 )
 
 const (
-	requiredPorts      = 2
-	rabbitMQImage      = "rabbitmq:3.13-alpine"
-	mainQueue          = "messages"
-	deadLetterQueue    = "dead-letters"
-	deadLetterExchange = "token-bench.dead-letters"
+	requiredPorts          = 2
+	rabbitMQImage          = "rabbitmq:3.13-alpine"
+	mainQueue              = "messages"
+	deadLetterQueue        = "dead-letters"
+	deadLetterExchange     = "token-bench.dead-letters"
+	connectionCloseTimeout = 2 * time.Second
 )
 
 //go:embed prompt.md.tmpl
 var promptTemplate string
 
+type rabbitMQConnection interface {
+	Channel() (*amqp.Channel, error)
+	CloseDeadline(time.Time) error
+	IsClosed() bool
+}
+
 type deadLetterChannel struct {
 	applicationPort int
 	brokerPort      int
 	containerName   string
-	connection      *amqp.Connection
+	connection      rabbitMQConnection
 	channel         *amqp.Channel
+	confirmations   <-chan amqp.Confirmation
 	initErr         error
 }
 
@@ -141,13 +149,15 @@ func (d *deadLetterChannel) connectAndConfigure(ctx context.Context) error {
 	if err := d.channel.Confirm(false); err != nil {
 		return fmt.Errorf("enable RabbitMQ publisher confirms: %w", err)
 	}
+	d.confirmations = d.channel.NotifyPublish(make(chan amqp.Confirmation, 1))
 	return nil
 }
 
 func (d *deadLetterChannel) cleanup() error {
 	var failures []error
 	if d.connection != nil {
-		if err := d.connection.Close(); err != nil && !errors.Is(err, amqp.ErrClosed) {
+		deadline := time.Now().Add(connectionCloseTimeout)
+		if err := d.connection.CloseDeadline(deadline); err != nil && !errors.Is(err, amqp.ErrClosed) {
 			failures = append(failures, fmt.Errorf("close RabbitMQ connection: %w", err))
 		}
 	}
@@ -159,7 +169,7 @@ func (d *deadLetterChannel) cleanup() error {
 			failures = append(failures, fmt.Errorf("remove RabbitMQ container: %w: %s", err, strings.TrimSpace(string(output))))
 		}
 	}
-	d.connection, d.channel, d.containerName = nil, nil, ""
+	d.connection, d.channel, d.confirmations, d.containerName = nil, nil, nil, ""
 	return errors.Join(failures...)
 }
 
@@ -217,16 +227,16 @@ func (d *deadLetterChannel) Validation() (bool, error) {
 }
 
 func (d *deadLetterChannel) publish(ctx context.Context, messages []queueMessage) error {
-	confirmations := d.channel.NotifyPublish(make(chan amqp.Confirmation, len(messages)))
 	for _, message := range messages {
 		publishing := amqp.Publishing{ContentType: "application/json", DeliveryMode: amqp.Persistent, CorrelationId: message.messageID, Body: message.body}
 		if err := d.channel.PublishWithContext(ctx, "", mainQueue, false, false, publishing); err != nil {
 			return fmt.Errorf("publish %s to source queue: %w", message.messageID, err)
 		}
-	}
-	for range messages {
 		select {
-		case confirmation := <-confirmations:
+		case confirmation, ok := <-d.confirmations:
+			if !ok {
+				return errors.New("RabbitMQ publisher confirmation channel closed")
+			}
 			if !confirmation.Ack {
 				return errors.New("RabbitMQ rejected a benchmark message")
 			}
