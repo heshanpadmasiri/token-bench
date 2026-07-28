@@ -16,4 +16,8 @@ func TestClaudeStatusFormatsAssistantAndToolActivity(t *testing.T) {
 	if !strings.Contains(actual, "Using Bash\ngo test ./...") {
 		t.Fatalf("unexpected tool status %q", actual)
 	}
+	notification := json.RawMessage(`{"type":"result","subtype":"success","origin":{"kind":"task-notification"}}`)
+	if actual := claudeStatus("result", notification); actual != "Claude\n\nCompleted the current task." {
+		t.Fatalf("unexpected result status %q", actual)
+	}
 }

@@ -62,16 +62,14 @@ func (a *traceAdapter) Process(eventType string, raw json.RawMessage) error {
 			return fmt.Errorf("decode result event: %w", err)
 		}
 		a.benchmark.AddModelUsage(traceModelUsage(event, a.fallbackModel))
-		if event.Origin.Kind != "task-notification" {
-			description := ""
-			if event.Subtype != "success" || event.IsError {
-				description = strings.Join(event.Errors, "; ")
-				if description == "" {
-					description = "Claude result was not successful"
-				}
+		description := ""
+		if event.Subtype != "success" || event.IsError {
+			description = strings.Join(event.Errors, "; ")
+			if description == "" {
+				description = "Claude result was not successful"
 			}
-			a.finishTurn(description)
 		}
+		a.finishTurn(description)
 	}
 	return nil
 }

@@ -51,7 +51,7 @@ func claudeStatus(eventType string, raw json.RawMessage) string {
 		}
 	case "result":
 		var event resultEvent
-		if json.Unmarshal(raw, &event) != nil || event.Origin.Kind == "task-notification" {
+		if json.Unmarshal(raw, &event) != nil {
 			return ""
 		}
 		if event.Subtype == "success" && !event.IsError {

@@ -23,6 +23,9 @@ func TestStartArgumentsUseStreamingPrintMode(t *testing.T) {
 		"--model", "opus",
 		"--effort", "high",
 		"--dangerously-skip-permissions",
+		"--disallowedTools", "AskUserQuestion",
+		"--append-system-prompt", "Do not ask clarifying questions. Make reasonable assumptions and state them in your final output.",
+		"--max-budget-usd", "20",
 		"--setting-sources", "",
 		"-p",
 		"--input-format", "stream-json",
@@ -35,7 +38,7 @@ func TestStartArgumentsUseStreamingPrintMode(t *testing.T) {
 	}
 }
 
-func TestStreamingProcessSupportsMultipleMessagesAndPersistsLogs(t *testing.T) {
+func TestStreamingProcessTreatsEveryResultAsCompletionAndPersistsLogs(t *testing.T) {
 	binDir := t.TempDir()
 	claudePath := filepath.Join(binDir, "claude")
 	script := `#!/bin/sh
@@ -49,7 +52,11 @@ while IFS= read -r message; do
   if [ "$turn" -eq 1 ]; then
     printf '%s\n' '{"type":"system","subtype":"init"}'
   fi
-  printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"reply-$turn\",\"modelUsage\":{\"main\":{\"inputTokens\":3,\"outputTokens\":5,\"cacheReadInputTokens\":7,\"cacheCreationInputTokens\":11},\"subagent\":{\"inputTokens\":13,\"outputTokens\":17,\"cacheReadInputTokens\":19,\"cacheCreationInputTokens\":23}}}"
+  if [ "$turn" -eq 1 ]; then
+    printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"reply-$turn\",\"origin\":{\"kind\":\"task-notification\"},\"modelUsage\":{\"main\":{\"inputTokens\":3,\"outputTokens\":5,\"cacheReadInputTokens\":7,\"cacheCreationInputTokens\":11},\"subagent\":{\"inputTokens\":13,\"outputTokens\":17,\"cacheReadInputTokens\":19,\"cacheCreationInputTokens\":23}}}"
+  else
+    printf '%s\n' "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"errors\":[\"failed\"],\"result\":\"reply-$turn\",\"modelUsage\":{\"main\":{\"inputTokens\":3,\"outputTokens\":5,\"cacheReadInputTokens\":7,\"cacheCreationInputTokens\":11},\"subagent\":{\"inputTokens\":13,\"outputTokens\":17,\"cacheReadInputTokens\":19,\"cacheCreationInputTokens\":23}}}"
+  fi
 done
 printf '%s\n' 'fake Claude closed' >&2
 `

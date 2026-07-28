@@ -2,6 +2,7 @@
 package claude
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,9 @@ import (
 	"token-bench/harness/internal/shared"
 	"token-bench/tracing"
 )
+
+//go:embed append_system_prompt.md
+var appendSystemPrompt string
 
 const (
 	model              = "opus"
@@ -335,6 +339,9 @@ func (c *claude) startArguments() []string {
 		"--model", model,
 		"--effort", effort,
 		"--dangerously-skip-permissions",
+		"--disallowedTools", "AskUserQuestion",
+		"--append-system-prompt", strings.TrimSpace(appendSystemPrompt),
+		"--max-budget-usd", "20",
 		"--setting-sources", "",
 		"-p",
 		"--input-format", "stream-json",
@@ -378,16 +385,6 @@ func (c *claude) SendMessage(message string) (string, error) {
 				return "", c.processFailure("Claude stream ended before a result", c.process)
 			}
 			c.addUsage(result)
-			if result.Origin.Kind == "task-notification" {
-				continue
-			}
-			if result.Subtype != "success" || result.IsError {
-				detail := strings.Join(result.Errors, "; ")
-				if detail == "" {
-					detail = "Claude reported an unsuccessful result"
-				}
-				return "", fmt.Errorf("Claude result %q: %s", result.Subtype, detail)
-			}
 			c.lastReply = result.Result
 			return c.lastReply, nil
 		case <-timer.C:

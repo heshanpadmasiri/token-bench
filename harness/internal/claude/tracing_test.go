@@ -44,12 +44,12 @@ func TestTraceAdapterMapsAssistantEventsAndToolResults(t *testing.T) {
 	assertRecordedTool(t, first.tools[1], "Search", `{"query":"handler"}`, "main.go")
 }
 
-func TestTraceAdapterMarksFailedToolsAndResults(t *testing.T) {
+func TestTraceAdapterEndsTurnForEveryResult(t *testing.T) {
 	benchmark := &recordingBenchmark{}
 	adapter := newTraceAdapter(benchmark, model)
 	processTraceEvent(t, adapter, "assistant", `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"bash","name":"Bash","input":{"command":"false"}}]}}`)
 	processTraceEvent(t, adapter, "user", `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash","content":"exit 1","is_error":true}]}}`)
-	processTraceEvent(t, adapter, "result", `{"type":"result","subtype":"error","is_error":true,"errors":["model failed"]}`)
+	processTraceEvent(t, adapter, "result", `{"type":"result","subtype":"error","is_error":true,"errors":["model failed"],"origin":{"kind":"task-notification"}}`)
 
 	turn := benchmark.turns[0]
 	if turn.status != "ERROR: model failed" {
